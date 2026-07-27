@@ -1,11 +1,27 @@
 #!/bin/bash
 
 shopt -s extglob
+
+PRIVATE_FEEDS_FILE="$PWD/.private-feeds"
+rm -f "$PRIVATE_FEEDS_FILE"
+
+if [ -d "${PRIVATE_FEEDS_ROOT:-}" ]; then
+	for repo_path in "$PRIVATE_FEEDS_ROOT"/*; do
+		[ -d "$repo_path" ] || continue
+		repo_name="${repo_path##*/}"
+		feed_name="${repo_name#luci-app-}"
+		printf 'src-link %s %s\n' "$feed_name" "$repo_path" >> feeds.conf
+		printf '%s\n' "$feed_name" >> "$PRIVATE_FEEDS_FILE"
+	done
+else
+	echo "Private feeds are unavailable; skipping."
+fi
+
+./scripts/feeds update -a
+
 rm -rf feeds/kiddin9/{diy,mt-drivers,shortcut-fe,luci-app-mtwifi,base-files,luci-app-package-manager,\
 dnsmasq,firewall*,wifi-scripts,opkg,ppp,curl,luci-app-firewall,\
 nftables,fstools,wireless-regdb,libnftnl}
-
-curl -sfL https://raw.githubusercontent.com/openwrt/packages/master/lang/golang/golang/Makefile -o feeds/packages/lang/golang/golang/Makefile
 
 for ipk in $(find feeds/kiddin9/* -maxdepth 0 -type d);
 do
@@ -25,7 +41,6 @@ rm -Rf feeds/base/package/system/!(opkg|ubus|uci|ca-certificates)
 rm -Rf feeds/base/package/kernel/!(cryptodev-linux)
 #COMMENT
 
-./scripts/feeds update -a
 ./scripts/feeds install -a -p kiddin9 -f
 ./scripts/feeds install -a
 

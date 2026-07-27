@@ -20,7 +20,6 @@ on:
         default: '.*'
 
 env:
-  REPO_TOKEN: ${{ secrets.TOKEN_kiddin9 }}
   TZ: Asia/Shanghai
 
 jobs:
@@ -33,92 +32,94 @@ jobs:
       if: contains(github.event.inputs.packages, ' cw')
       with:
         workflow_id: all
-        access_token: ${{ secrets.TOKEN_KIDDIN9 }}
+        access_token: ${{ secrets.REPO_TOKEN }}
     
     - name: Trigger matrix Update
+      env:
+        REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
       run: |
         echo "Historical package feed is pinned; dispatching compile matrix."
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "x86_64 ${{ github.event.inputs.packages }}", "client_payload": {"target": "x86_64"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "i386_pentium4 ${{ github.event.inputs.packages }}", "client_payload": {"target": "i386_pentium4"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "aarch64_generic ${{ github.event.inputs.packages }}", "client_payload": {"target": "aarch64_generic"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "arm_arm1176jzf-s_vfp ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_arm1176jzf-s_vfp"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "arm_cortex-a5_vfpv4 ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_cortex-a5_vfpv4"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "aarch64_cortex-a72 ${{ github.event.inputs.packages }}", "client_payload": {"target": "aarch64_cortex-a72"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "aarch64_cortex-a53 ${{ github.event.inputs.packages }}", "client_payload": {"target": "aarch64_cortex-a53"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "mipsel_24kc ${{ github.event.inputs.packages }}", "client_payload": {"target": "mipsel_24kc"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "mips_24kc ${{ github.event.inputs.packages }}", "client_payload": {"target": "mips_24kc"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "arm_cortex-a7_neon-vfpv4 ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_cortex-a7_neon-vfpv4"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "arm_cortex-a7 ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_cortex-a7"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "arm_cortex-a9 ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_cortex-a9"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "arm_cortex-a9_vfpv3-d16 ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_cortex-a9_vfpv3-d16"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "arm_cortex-a15_neon-vfpv4 ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_cortex-a15_neon-vfpv4"}}'
           curl \
           -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
           -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token ${{ env.REPO_TOKEN }}" \
+          -H "Authorization: token $REPO_TOKEN" \
           -d '{"event_type": "aarch64_cortex-a76 ${{ github.event.inputs.packages }}", "client_payload": {"target": "aarch64_cortex-a76"}}'
 
     - name: Delete workflow runs
       uses: GitRML/delete-workflow-runs@main
       continue-on-error: true
       with:
-        token: ${{ secrets.TOKEN_KIDDIN9 }}
+        token: ${{ secrets.REPO_TOKEN }}
         retain_days: 20
         keep_minimum_runs: 1
 
@@ -130,5 +131,5 @@ jobs:
         keep_latest: 100
         delete_tags: true
       env:
-        GITHUB_TOKEN: ${{ secrets.TOKEN_KIDDIN9 }}
+        GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
        

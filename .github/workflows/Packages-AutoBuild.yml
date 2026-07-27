@@ -42,6 +42,51 @@ jobs:
       with:
         fetch-depth: 0
 
+    - name: Check private feeds token
+      id: private-feeds
+      env:
+        REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+      run: |
+        if [ -n "$REPO_TOKEN" ]; then
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          echo "REPO_TOKEN is not configured; skipping private LuCI feeds."
+        fi
+
+    - name: Checkout private feeds workspace
+      if: ${{ steps.private-feeds.outputs.enabled == 'true' }}
+      uses: actions/checkout@v4.3.0
+      with:
+        repository: opewrt/kwrt-main
+        ref: main
+        token: ${{ secrets.REPO_TOKEN }}
+        path: private-workspace
+        fetch-depth: 1
+        persist-credentials: false
+
+    - name: Checkout private feed submodules
+      if: ${{ steps.private-feeds.outputs.enabled == 'true' }}
+      env:
+        GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+      run: |
+        set -e
+        cd "${GITHUB_WORKSPACE}/private-workspace"
+        git config -f .gitmodules --get-regexp '^submodule\..*\.path$' |
+        while read -r key submodule_path; do
+          case "$submodule_path" in
+            luci-apps/*) ;;
+            *) continue ;;
+          esac
+          repo_url="$(git config -f .gitmodules --get "${key%.path}.url")"
+          commit="$(git ls-tree HEAD "$submodule_path" | awk '{print $3}')"
+          repo="${repo_url#https://github.com/}"
+          repo="${repo%.git}"
+          rmdir "$submodule_path" 2>/dev/null || true
+          gh repo clone "$repo" "$submodule_path" -- --no-checkout
+          git -C "$submodule_path" checkout --detach "$commit"
+        done
+
     - name: Load Settings.ini
       run: |
         source "${GITHUB_WORKSPACE}/devices/common/settings.ini"
@@ -56,12 +101,6 @@ jobs:
         echo "UPLOAD_FIRMWARE_FOR_RELEASE=${UPLOAD_FIRMWARE_FOR_RELEASE}" >> $GITHUB_ENV
         echo "UPLOAD_FIRMWARE_TO_COWTRANSFER=${UPLOAD_FIRMWARE_TO_COWTRANSFER}" >> $GITHUB_ENV
         echo "UPLOAD_FIRMWARE_TO_WETRANSFER=${UPLOAD_FIRMWARE_TO_WETRANSFER}" >> $GITHUB_ENV
-        if [[ "${{matrix.target}}" == arm_* ]]; then
-          echo "REPO_TOKEN=${{ secrets.TOKEN_KKKIDDING }}" >> $GITHUB_ENV
-        else
-          echo "REPO_TOKEN=${{ secrets.TOKEN_KKKKIDDIN }}" >> $GITHUB_ENV
-        fi
-        sed -i "1a REPO_TOKEN=${{ env.REPO_TOKEN }}" ${GITHUB_WORKSPACE}/devices/common/custom.sh
 
     - name: Trigger Packages Update
       run: |
@@ -103,7 +142,7 @@ jobs:
         set -v
         REPO_BRANCH="24.10.0-rc6"
         #REPO_BRANCH="$(curl -gs -H 'Content-Type: application/json' \
-        #   -H "Authorization: Bearer ${{ secrets.TOKEN_KIDDIN9 }}" \
+        #   -H "Authorization: Bearer $REPO_TOKEN" \
         #   -X POST -d '{ "query": "query {repository(owner: \"openwrt\", name: \"openwrt\") {refs(refPrefix: \"refs/tags/\", last: 4, orderBy: {field: TAG_COMMIT_DATE, direction: ASC}) {edges {node {name}}}}}"}' https://api.github.com/graphql | jq -r '.data.repository.refs.edges[].node.name' | grep v23 | tail -n 1 | sed -e 's/v//')" || true
         echo "$REPO_BRANCH"
         if [ ${{matrix.target}} == "mipsel_24kc" ]; then
@@ -185,9 +224,11 @@ jobs:
         cp -rf ../devices ./
         cp -rf devices/common/. ./
         cp -rf devices/${{matrix.target}}/. ./
+        if [ "${{ steps.private-feeds.outputs.enabled }}" = "true" ]; then
+          export PRIVATE_FEEDS_ROOT="${GITHUB_WORKSPACE}/private-workspace/luci-apps"
+        fi
         chmod -R +x devices/* || true
         sed -i '/	refresh_config();/d' scripts/feeds
-        ./scripts/feeds update -a
         find "devices/common/patches" -type f -name '*.b.patch' -print0 | sort -z | xargs -I % -t -0 -n 1 sh -c "cat '%'  | patch -d './' -p1 -E --forward --no-backup-if-mismatch"
         /bin/bash "devices/common/custom.sh"
         if [ -f "devices/${{matrix.target}}/custom.sh" ]; then
@@ -211,6 +252,12 @@ jobs:
     - name: SSH connection to Actions
       uses: kiddin9/debugger-action@master
       if: contains(github.event.action, 'ssh')
+
+    - name: Compile private feeds
+      if: ${{ steps.private-feeds.outputs.enabled == 'true' }}
+      run: |
+        cd openwrt
+        /bin/bash devices/common/compile-private-feeds.sh
 
     - name: Prepare
       run: |
@@ -264,7 +311,15 @@ jobs:
       id: organize
       run: |
         mkdir packages
-        mv -f openwrt/bin/packages/*/kiddin9/* packages || true
+        feeds=(kiddin9)
+        if [ -f openwrt/.private-feeds ]; then
+          while read -r feed; do
+            [ -n "$feed" ] && feeds+=("$feed")
+          done < openwrt/.private-feeds
+        fi
+        for feed in "${feeds[@]}"; do
+          mv -f openwrt/bin/packages/*/"$feed"/* packages/ 2>/dev/null || true
+        done
         mv -f openwrt/.config packages/${{matrix.target}}.config || true
         # cp -Rf openwrt/bin/packages/*/packages/python3* packages/
         # cp -Rf openwrt/bin/packages/*/luci/luci-base* packages/ || true
@@ -299,7 +354,7 @@ jobs:
         
     - name: Create release
       id: create_release
-      if: env.REPO_TOKEN && env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true'
+      if: steps.private-feeds.outputs.enabled == 'true' && env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true'
       continue-on-error: true
       run: |
         echo -e "墙内加速下载 🚀:\n" >> release.txt
@@ -311,9 +366,9 @@ jobs:
     - name: Upload packages for release
       uses: softprops/action-gh-release@master
       continue-on-error: true
-      if: env.REPO_TOKEN && env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true'
+      if: steps.private-feeds.outputs.enabled == 'true' && env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true'
       env:
-        GITHUB_TOKEN: ${{ secrets.TOKEN_KIDDIN9 }}
+        GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
       with:
         files: |
             packages/*

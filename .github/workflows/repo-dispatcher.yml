@@ -1,135 +1,82 @@
-#=================================================
-# https://github.com/P3TERX/Actions-OpenWrt
-# Description: Build OpenWrt using GitHub Actions
-# Lisence: MIT
-# Author: P3TERX
-# Blog: https://p3terx.com
-#=================================================
-
 name: Repo Dispatcher
 
-on: 
-  # push: 
-  #   branches:
-  #     - master
+on:
   workflow_dispatch:
     inputs:
+      target:
+        description: 'package architecture'
+        required: true
+        default: 'x86_64'
+      sdk_tag:
+        description: 'Kwrt release tag, empty selects the latest compatible release'
+        required: false
+        default: ''
+      sdk_asset:
+        description: 'exact SDK asset name, empty selects the release SDK'
+        required: false
+        default: ''
+      main_commit:
+        description: 'exact kwrt-main commit, empty uses main'
+        required: false
+        default: ''
       packages:
-        description: 'Packages'
+        description: 'managed package directory regex'
         required: false
         default: '.*'
+      release:
+        description: 'create package release'
+        required: false
+        type: boolean
+        default: true
+      nocache:
+        description: 'disable build caches'
+        required: false
+        type: boolean
+        default: false
 
 env:
   TZ: Asia/Shanghai
 
 jobs:
-  build:
-    if: github.event.repository.owner.id == github.event.sender.id || ! github.event.sender.id
+  dispatch:
+    if: github.repository_owner == 'opewrt'
     runs-on: ubuntu-latest
     steps:
-    - name: cancel running workflows
-      uses: styfle/cancel-workflow-action@main
-      if: contains(github.event.inputs.packages, ' cw')
-      with:
-        workflow_id: all
-        access_token: ${{ secrets.REPO_TOKEN }}
-    
-    - name: Trigger matrix Update
+    - name: Trigger package build
       env:
-        REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+        GH_TOKEN: ${{ secrets.REPO_TOKEN }}
+        TARGET: ${{ inputs.target }}
+        SDK_TAG: ${{ inputs.sdk_tag }}
+        SDK_ASSET: ${{ inputs.sdk_asset }}
+        MAIN_COMMIT: ${{ inputs.main_commit }}
+        PACKAGES: ${{ inputs.packages }}
+        CREATE_RELEASE: ${{ inputs.release }}
+        NOCACHE: ${{ inputs.nocache }}
       run: |
-        echo "Historical package feed is pinned; dispatching compile matrix."
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "x86_64 ${{ github.event.inputs.packages }}", "client_payload": {"target": "x86_64"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "i386_pentium4 ${{ github.event.inputs.packages }}", "client_payload": {"target": "i386_pentium4"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "aarch64_generic ${{ github.event.inputs.packages }}", "client_payload": {"target": "aarch64_generic"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "arm_arm1176jzf-s_vfp ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_arm1176jzf-s_vfp"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "arm_cortex-a5_vfpv4 ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_cortex-a5_vfpv4"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "aarch64_cortex-a72 ${{ github.event.inputs.packages }}", "client_payload": {"target": "aarch64_cortex-a72"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "aarch64_cortex-a53 ${{ github.event.inputs.packages }}", "client_payload": {"target": "aarch64_cortex-a53"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "mipsel_24kc ${{ github.event.inputs.packages }}", "client_payload": {"target": "mipsel_24kc"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "mips_24kc ${{ github.event.inputs.packages }}", "client_payload": {"target": "mips_24kc"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "arm_cortex-a7_neon-vfpv4 ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_cortex-a7_neon-vfpv4"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "arm_cortex-a7 ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_cortex-a7"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "arm_cortex-a9 ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_cortex-a9"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "arm_cortex-a9_vfpv3-d16 ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_cortex-a9_vfpv3-d16"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "arm_cortex-a15_neon-vfpv4 ${{ github.event.inputs.packages }}", "client_payload": {"target": "arm_cortex-a15_neon-vfpv4"}}'
-          curl \
-          -X POST https://api.github.com/repos/${{ github.repository }}/dispatches \
-          -H "Accept: application/vnd.github.everest-preview+json" \
-          -H "Authorization: token $REPO_TOKEN" \
-          -d '{"event_type": "aarch64_cortex-a76 ${{ github.event.inputs.packages }}", "client_payload": {"target": "aarch64_cortex-a76"}}'
-
-    - name: Delete workflow runs
-      uses: GitRML/delete-workflow-runs@main
-      continue-on-error: true
-      with:
-        token: ${{ secrets.REPO_TOKEN }}
-        retain_days: 20
-        keep_minimum_runs: 1
-
-    - name: Remove old Releases
-      uses: dev-drprasad/delete-older-releases@master
-      continue-on-error: true
-      if: env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true' && !cancelled()
-      with:
-        keep_latest: 100
-        delete_tags: true
-      env:
-        GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
-       
+        set -euo pipefail
+        test -n "$GH_TOKEN"
+        jq -n \
+          --arg target "$TARGET" \
+          --arg sdk_tag "$SDK_TAG" \
+          --arg sdk_asset "$SDK_ASSET" \
+          --arg main_commit "$MAIN_COMMIT" \
+          --arg packages "$PACKAGES" \
+          --argjson release "$CREATE_RELEASE" \
+          --argjson nocache "$NOCACHE" \
+          '{
+            event_type: "packages-build",
+            client_payload: {
+              target: $target,
+              sdk_repository: "opewrt/Kwrt",
+              sdk_tag: $sdk_tag,
+              sdk_asset: $sdk_asset,
+              main_commit: $main_commit,
+              packages: $packages,
+              release: $release,
+              nocache: $nocache
+            }
+          }' |
+          gh api \
+            --method POST \
+            "repos/${{ github.repository }}/dispatches" \
+            --input -

@@ -1,46 +1,148 @@
 #=================================================
 # https://github.com/P3TERX/Actions-OpenWrt
-# Description: Build OpenWrt using GitHub Actions
+# Description: Build OpenWrt packages using a Kwrt SDK
 # Lisence: MIT
 # Author: P3TERX
-# Blog: https://p3terx.com
 #=================================================
 
 name: Packages-AutoBuild
 
-on: 
+on:
   repository_dispatch:
-  # push: 
-  #   branches:
-  #     - master
-  # schedule:
-  #   - cron: 0 1 */1 * *
+    types:
+      - kwrt-sdk-released
+      - packages-build
+  workflow_dispatch:
+    inputs:
+      target:
+        description: 'package architecture'
+        required: true
+        default: 'x86_64'
+      sdk_repository:
+        description: 'Kwrt SDK release repository'
+        required: false
+        default: 'opewrt/Kwrt'
+      sdk_tag:
+        description: 'Kwrt release tag, empty selects the latest compatible release'
+        required: false
+        default: ''
+      sdk_asset:
+        description: 'exact SDK asset name, empty selects the release SDK'
+        required: false
+        default: ''
+      main_commit:
+        description: 'exact kwrt-main commit, empty uses main'
+        required: false
+        default: ''
+      packages:
+        description: 'managed package directory regex'
+        required: false
+        default: '.*'
+      release:
+        description: 'create package release'
+        required: false
+        type: boolean
+        default: true
+      nocache:
+        description: 'disable SDK, download and ccache caches'
+        required: false
+        type: boolean
+        default: false
+  push:
+    branches:
+      - main
+    paths:
+      - '.github/workflows/Packages-AutoBuild.yml'
+      - 'devices/**'
 
 env:
-  PPPOE_USERNAME: ${{ secrets.PPPOE_USERNAME }}
-  PPPOE_PASSWD: ${{ secrets.PPPOE_PASSWD }}
-  SCKEY: ${{ secrets.SCKEY }}
-  SSH_PRIVATE_KEY: ${{ secrets.SSH_PRIVATE_KEY }}
-  TELEGRAM_TOKEN: ${{ secrets.TELEGRAM_TOKEN }}
-  TELEGRAM_CHAT_ID: ${{ secrets.TELEGRAM_CHAT_ID }}
   TZ: Asia/Shanghai
+  CCACHE_DIR: /mnt/openwrt/ccache
 
 jobs:
   build:
-    if: github.event.repository.owner.id == github.event.sender.id || github.event.sender.id == '119362912'
+    if: github.repository_owner == 'opewrt'
     runs-on: ubuntu-latest
-    
-    name: Build ${{matrix.target}}
-    strategy:
-      fail-fast: false
-      matrix:
-        target: ["${{ github.event.client_payload.target }}"]
-        
+    name: Build packages
+
     steps:
     - name: Checkout
-      uses: actions/checkout@main
+      uses: actions/checkout@v4.3.0
       with:
         fetch-depth: 0
+
+    - name: Normalize build inputs
+      id: inputs
+      env:
+        EVENT_NAME: ${{ github.event_name }}
+        EVENT_TARGET: ${{ github.event.client_payload.target || inputs.target }}
+        EVENT_PACKAGES: ${{ github.event.client_payload.packages || inputs.packages }}
+        EVENT_SDK_REPOSITORY: ${{ github.event.client_payload.sdk_repository || inputs.sdk_repository }}
+        EVENT_SDK_TAG: ${{ github.event.client_payload.sdk_tag || inputs.sdk_tag }}
+        EVENT_SDK_ASSET: ${{ github.event.client_payload.sdk_asset || inputs.sdk_asset }}
+        EVENT_MAIN_COMMIT: ${{ github.event.client_payload.main_commit || inputs.main_commit }}
+        DISPATCH_RELEASE: ${{ toJSON(github.event.client_payload.release) }}
+        DISPATCH_NOCACHE: ${{ toJSON(github.event.client_payload.nocache) }}
+        INPUT_RELEASE: ${{ toJSON(inputs.release) }}
+        INPUT_NOCACHE: ${{ toJSON(inputs.nocache) }}
+      run: |
+        set -euo pipefail
+        target="${EVENT_TARGET:-x86_64}"
+        packages="${EVENT_PACKAGES:-.*}"
+        sdk_repository="${EVENT_SDK_REPOSITORY:-opewrt/Kwrt}"
+        case "$EVENT_NAME" in
+          repository_dispatch)
+            release="${DISPATCH_RELEASE:-null}"
+            nocache="${DISPATCH_NOCACHE:-null}"
+            ;;
+          workflow_dispatch)
+            release="${INPUT_RELEASE:-null}"
+            nocache="${INPUT_NOCACHE:-null}"
+            ;;
+          *)
+            release="true"
+            nocache="false"
+            ;;
+        esac
+        [ "$release" != "null" ] || release="true"
+        [ "$nocache" != "null" ] || nocache="false"
+        case "$release:$nocache" in
+          true:true|true:false|false:true|false:false) ;;
+          *) echo "release and nocache must be boolean values" >&2; exit 1 ;;
+        esac
+        if [ "$packages" != ".*" ] && [ "$release" = "true" ]; then
+          echo "Filtered builds do not replace the full SDK-bound package release."
+          release="false"
+        fi
+        {
+          echo "target=$target"
+          echo "packages=$packages"
+          echo "sdk_repository=$sdk_repository"
+          echo "sdk_tag=${EVENT_SDK_TAG:-}"
+          echo "sdk_asset=${EVENT_SDK_ASSET:-}"
+          echo "main_commit=${EVENT_MAIN_COMMIT:-}"
+          echo "release=$release"
+          echo "nocache=$nocache"
+        } >> "$GITHUB_OUTPUT"
+        {
+          echo "TARGET=$target"
+          echo "PACKAGE_FILTER=$packages"
+          echo "SDK_REPOSITORY=$sdk_repository"
+          echo "REQUESTED_SDK_TAG=${EVENT_SDK_TAG:-}"
+          echo "REQUESTED_SDK_ASSET=${EVENT_SDK_ASSET:-}"
+          echo "REQUESTED_MAIN_COMMIT=${EVENT_MAIN_COMMIT:-}"
+          echo "CREATE_RELEASE=$release"
+          echo "NOCACHE=$nocache"
+        } >> "$GITHUB_ENV"
+
+    - name: Load package build settings
+      run: |
+        set -e
+        source "$GITHUB_WORKSPACE/devices/common/settings.ini"
+        {
+          echo "UPLOAD_PACKAGES_FOR_ARTIFACT=$UPLOAD_PACKAGES_FOR_ARTIFACT"
+          echo "UPLOAD_PACKAGES_FOR_RELEASE=$UPLOAD_PACKAGES_FOR_RELEASE"
+        } >> "$GITHUB_ENV"
 
     - name: Check private feeds token
       id: private-feeds
@@ -55,23 +157,23 @@ jobs:
         fi
 
     - name: Checkout private feeds workspace
-      if: ${{ steps.private-feeds.outputs.enabled == 'true' }}
+      if: steps.private-feeds.outputs.enabled == 'true'
       uses: actions/checkout@v4.3.0
       with:
         repository: opewrt/kwrt-main
-        ref: main
+        ref: ${{ steps.inputs.outputs.main_commit || 'main' }}
         token: ${{ secrets.REPO_TOKEN }}
         path: private-workspace
         fetch-depth: 1
         persist-credentials: false
 
     - name: Checkout private feed submodules
-      if: ${{ steps.private-feeds.outputs.enabled == 'true' }}
+      if: steps.private-feeds.outputs.enabled == 'true'
       env:
         GH_TOKEN: ${{ secrets.REPO_TOKEN }}
       run: |
-        set -e
-        cd "${GITHUB_WORKSPACE}/private-workspace"
+        set -euo pipefail
+        cd "$GITHUB_WORKSPACE/private-workspace"
         git config -f .gitmodules --get-regexp '^submodule\..*\.path$' |
         while read -r key submodule_path; do
           case "$submodule_path" in
@@ -87,27 +189,17 @@ jobs:
           git -C "$submodule_path" checkout --detach "$commit"
         done
 
-    - name: Load Settings.ini
+    - name: Record private workspace commit
       run: |
-        source "${GITHUB_WORKSPACE}/devices/common/settings.ini"
-        echo "REPO_URL=${REPO_URL}" >> $GITHUB_ENV
-        echo "REPO_BRANCH=${REPO_BRANCH}" >> $GITHUB_ENV
-        echo "CONFIG_FILE=${CONFIG_FILE}" >> $GITHUB_ENV
-        echo "DIY_SH=${DIY_SH}" >> $GITHUB_ENV
-        echo "FREE_UP_DISK=${FREE_UP_DISK}" >> $GITHUB_ENV
-        echo "SSH_ACTIONS=${SSH_ACTIONS}" >> $GITHUB_ENV
-        echo "UPLOAD_BIN_DIR_FOR_ARTIFACT=${UPLOAD_BIN_DIR_FOR_ARTIFACT}" >> $GITHUB_ENV
-        echo "UPLOAD_FIRMWARE_FOR_ARTIFACT=${UPLOAD_FIRMWARE_FOR_ARTIFACT}" >> $GITHUB_ENV
-        echo "UPLOAD_FIRMWARE_FOR_RELEASE=${UPLOAD_FIRMWARE_FOR_RELEASE}" >> $GITHUB_ENV
-        echo "UPLOAD_FIRMWARE_TO_COWTRANSFER=${UPLOAD_FIRMWARE_TO_COWTRANSFER}" >> $GITHUB_ENV
-        echo "UPLOAD_FIRMWARE_TO_WETRANSFER=${UPLOAD_FIRMWARE_TO_WETRANSFER}" >> $GITHUB_ENV
-
-    - name: Trigger Packages Update
-      run: |
-        echo "Historical package feed is pinned; skipping upstream package update."
+        if [ -d "$GITHUB_WORKSPACE/private-workspace/.git" ]; then
+          main_commit="$(git -C "$GITHUB_WORKSPACE/private-workspace" rev-parse HEAD)"
+        else
+          main_commit="none"
+        fi
+        echo "PRIVATE_WORKSPACE_COMMIT=$main_commit" >> "$GITHUB_ENV"
 
     - name: Free disk space
-      uses: coder-xiaomo/free-disk-space@main
+      uses: coder-xiaomo/free-disk-space@1.4.0
       with:
         tool-cache: false
         android: true
@@ -117,284 +209,186 @@ jobs:
         docker-images: true
         swap-storage: true
 
-    - name: Initialization environment
+    - name: Initialize environment
       env:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo -E apt-get -qq update
         sudo -E apt-get -qq install build-essential libncurses-dev zlib1g-dev gawk git \
-        gettext libssl-dev xsltproc rsync wget unzip \
-        llvm python3-pyelftools libpython3-dev aria2 jq qemu-utils rename \
-        libelf-dev libgmp3-dev libmpc-dev libfuse-dev bc
+          gettext libssl-dev xsltproc rsync wget unzip curl zstd ccache \
+          llvm python3-pyelftools libpython3-dev aria2 jq qemu-utils rename \
+          libelf-dev libgmp3-dev libmpc-dev libfuse-dev bc
         sudo -E apt-get -qq autoremove --purge
         sudo -E apt-get -qq clean
-        sudo timedatectl set-timezone "Asia/Shanghai"
+        sudo timedatectl set-timezone "$TZ"
 
-    - name: Get current date
-      id: date
+    - name: Resolve Kwrt SDK release
+      id: sdk
       run: |
-        echo "date=$(date +'%m/%d_%Y_%H/%M')" >> $GITHUB_ENV
-        echo "date2=$(date +'%m/%d %Y')" >> $GITHUB_ENV
-        echo "date3=$(date +'%m.%d')" >> $GITHUB_ENV
+        "$GITHUB_WORKSPACE/devices/common/resolve-kwrt-sdk.sh" \
+          "$SDK_REPOSITORY" \
+          "$TARGET" \
+          "$REQUESTED_SDK_TAG" \
+          "$REQUESTED_SDK_ASSET" \
+          "$GITHUB_WORKSPACE/sdk-metadata"
 
-    - name: Clone source code
+    - name: Prepare cache directories
       run: |
-        set -v
-        REPO_BRANCH="24.10.0-rc6"
-        #REPO_BRANCH="$(curl -gs -H 'Content-Type: application/json' \
-        #   -H "Authorization: Bearer $REPO_TOKEN" \
-        #   -X POST -d '{ "query": "query {repository(owner: \"openwrt\", name: \"openwrt\") {refs(refPrefix: \"refs/tags/\", last: 4, orderBy: {field: TAG_COMMIT_DATE, direction: ASC}) {edges {node {name}}}}}"}' https://api.github.com/graphql | jq -r '.data.repository.refs.edges[].node.name' | grep v23 | tail -n 1 | sed -e 's/v//')" || true
-        echo "$REPO_BRANCH"
-        if [ ${{matrix.target}} == "mipsel_24kc" ]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/ramips/mt7621/openwrt-sdk-$REPO_BRANCH-ramips-mt7621_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-        elif [ ${{matrix.target}} == "mips_24kc" ]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/ath79/nand/openwrt-sdk-$REPO_BRANCH-ath79-nand_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "x86_64" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/x86/64/openwrt-sdk-$REPO_BRANCH-x86-64_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "i386_pentium4" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/x86/generic/openwrt-sdk-$REPO_BRANCH-x86-generic_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "aarch64_generic" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/rockchip/armv8/openwrt-sdk-$REPO_BRANCH-rockchip-armv8_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "arm_arm1176jzf-s_vfp" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/bcm27xx/bcm2708/openwrt-sdk-$REPO_BRANCH-bcm27xx-bcm2708_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "arm_cortex-a15_neon-vfpv4" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/ipq806x/generic/openwrt-sdk-$REPO_BRANCH-ipq806x-generic_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "arm_cortex-a5_vfpv4" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/at91/sama5/openwrt-sdk-$REPO_BRANCH-at91-sama5_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "aarch64_cortex-a72" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/bcm27xx/bcm2711/openwrt-sdk-$REPO_BRANCH-bcm27xx-bcm2711_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "aarch64_cortex-a53" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/mediatek/filogic/openwrt-sdk-$REPO_BRANCH-mediatek-filogic_gcc-13.3.0_musl.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "arm_cortex-a7_neon-vfpv4" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/ipq40xx/generic/openwrt-sdk-$REPO_BRANCH-ipq40xx-generic_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "arm_cortex-a7" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/mediatek/mt7629/openwrt-sdk-$REPO_BRANCH-mediatek-mt7629_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "arm_cortex-a9" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/bcm53xx/generic/openwrt-sdk-$REPO_BRANCH-bcm53xx-generic_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "arm_cortex-a9_vfpv3-d16" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/mvebu/cortexa9/openwrt-sdk-$REPO_BRANCH-mvebu-cortexa9_gcc-13.3.0_musl_eabi.Linux-x86_64.tar.zst
-        elif [[ ${{matrix.target}} == "aarch64_cortex-a76" ]]; then
-            curl -fL -o sdk.tar.zst https://downloads.openwrt.org/releases/$REPO_BRANCH/targets/bcm27xx/bcm2712/openwrt-sdk-$REPO_BRANCH-bcm27xx-bcm2712_gcc-13.3.0_musl.Linux-x86_64.tar.zst
+        sudo mkdir -p -m 777 /mnt/openwrt/dl /mnt/openwrt/ccache
+        mkdir -p "$GITHUB_WORKSPACE/.cache/sdk"
+
+    - name: Cache Kwrt SDK
+      uses: actions/cache@v4
+      if: steps.inputs.outputs.nocache != 'true'
+      with:
+        path: .cache/sdk
+        key: kwrt-sdk-${{ runner.os }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}
+
+    - name: Cache package downloads
+      uses: actions/cache@v4
+      if: steps.inputs.outputs.nocache != 'true'
+      with:
+        path: /mnt/openwrt/dl
+        key: kwrt-packages-dl-${{ runner.os }}-${{ steps.inputs.outputs.target }}-${{ steps.sdk.outputs.release_tag }}-${{ github.sha }}
+        restore-keys: |
+          kwrt-packages-dl-${{ runner.os }}-${{ steps.inputs.outputs.target }}-${{ steps.sdk.outputs.release_tag }}-
+          kwrt-packages-dl-${{ runner.os }}-${{ steps.inputs.outputs.target }}-
+
+    - name: Cache compiler output
+      uses: actions/cache@v4
+      if: steps.inputs.outputs.nocache != 'true'
+      with:
+        path: /mnt/openwrt/ccache
+        key: kwrt-packages-ccache-${{ runner.os }}-${{ steps.inputs.outputs.target }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}-${{ github.sha }}
+        restore-keys: |
+          kwrt-packages-ccache-${{ runner.os }}-${{ steps.inputs.outputs.target }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}-
+
+    - name: Download and verify Kwrt SDK
+      run: |
+        set -euo pipefail
+        sdk_dir="$GITHUB_WORKSPACE/.cache/sdk/$SDK_RELEASE_TAG"
+        sdk_archive="$sdk_dir/$SDK_ASSET_NAME"
+        mkdir -p "$sdk_dir"
+        if [ ! -f "$sdk_archive" ]; then
+          curl -fL --retry 5 --retry-delay 5 "$SDK_DOWNLOAD_URL" -o "$sdk_archive"
         fi
+        printf '%s  %s\n' "$SDK_SHA256" "$SDK_ASSET_NAME" |
+          (cd "$sdk_dir" && sha256sum -c -)
+        echo "SDK_ARCHIVE=$sdk_archive" >> "$GITHUB_ENV"
 
-    - name: Free up disk space
-      env:
-        DEBIAN_FRONTEND: noninteractive
+    - name: Extract and configure SDK
       run: |
-        sudo mkdir -p -m 777 openwrt /mnt/openwrt/staging_dir /mnt/openwrt/build_dir /mnt/openwrt/bin  /mnt/openwrt/dl
-        ln -sf /mnt/openwrt/staging_dir openwrt/staging_dir
-        ln -sf /mnt/openwrt/bin openwrt/bin
-        ln -sf /mnt/openwrt/dl openwrt/dl
-        [[ "$(echo "${{github.event.action}}" | grep "a-")" ]] &&
-          ln -sf /mnt/openwrt/build_dir openwrt/build_dir
-        df -hT
-    
-    - name: Load custom configuration
-      run: |
-        function git_clone_path() {
-          trap 'rm -rf "$tmpdir"' EXIT
-          branch="$1" rurl="$2" mv="$3"
-          [[ "$mv" != "mv" ]] && shift 2 || shift 3
-          rootdir="$PWD"
-          tmpdir="$(mktemp -d)" || exit 1
-          if [ ${#branch} -lt 10 ]; then
-          git clone -b "$branch" --depth 1 --filter=blob:none --sparse "$rurl" "$tmpdir"
-          cd "$tmpdir"
-          else
-          git clone --filter=blob:none --sparse "$rurl" "$tmpdir"
-          cd "$tmpdir"
-          git checkout $branch
-          fi
-          if [ "$?" != 0 ]; then
-            echo "error on $rurl"
-            exit 1
-          fi
-          git sparse-checkout init --cone
-          git sparse-checkout set $@
-          [[ "$mv" != "mv" ]] && cp -rn ./* $rootdir/ || mv -n $@/* $rootdir/$@/
-          cd $rootdir
-          }
-        export -f git_clone_path
-        tar -xJf sdk.tar.zst -C openwrt || tar -xf sdk.tar.zst -C openwrt
-        rm -Rf sdk.tar.zst
+        set -euo pipefail
+        rm -rf openwrt sdk-extract
+        mkdir -p openwrt sdk-extract
+        tar --zstd -xf "$SDK_ARCHIVE" -C sdk-extract
+        sdk_root="$(find sdk-extract -mindepth 1 -maxdepth 1 -type d -name '*sdk*' -print -quit)"
+        test -n "$sdk_root"
+        cp -a "$sdk_root/." openwrt/
+        rm -rf sdk-extract openwrt/dl openwrt/.ccache
+        ln -s /mnt/openwrt/dl openwrt/dl
+        ln -s /mnt/openwrt/ccache openwrt/.ccache
+        cp -a devices openwrt/
+        cp -a devices/common/. openwrt/
+        if [ -d "devices/$TARGET" ]; then
+          cp -a "devices/$TARGET/." openwrt/
+        fi
         cd openwrt
-        cp -rf ./openwrt-sdk*/. ./ 2>/dev/null || true
-        cp -rf ./openwrt-sdk*/build_dir/. ./build_dir/ || true
-        cp -rf ./openwrt-sdk*/staging_dir/. ./staging_dir/ || true
-        cp -rf ../devices ./
-        cp -rf devices/common/. ./
-        cp -rf devices/${{matrix.target}}/. ./
+        chmod -R +x devices/*
+        devices/common/configure-feeds.sh "$GITHUB_WORKSPACE/sdk-metadata/MANIFEST.refs"
         if [ "${{ steps.private-feeds.outputs.enabled }}" = "true" ]; then
-          export PRIVATE_FEEDS_ROOT="${GITHUB_WORKSPACE}/private-workspace/luci-apps"
+          export PRIVATE_FEEDS_ROOT="$GITHUB_WORKSPACE/private-workspace/luci-apps"
         fi
-        chmod -R +x devices/* || true
-        sed -i '/	refresh_config();/d' scripts/feeds
-        find "devices/common/patches" -type f -name '*.b.patch' -print0 | sort -z | xargs -I % -t -0 -n 1 sh -c "cat '%'  | patch -d './' -p1 -E --forward --no-backup-if-mismatch"
-        /bin/bash "devices/common/custom.sh"
-        if [ -f "devices/${{matrix.target}}/custom.sh" ]; then
-          /bin/bash "devices/${{matrix.target}}/custom.sh"
+        find devices/common/patches -type f -name '*.b.patch' -print0 |
+          sort -z |
+          xargs -r -0 -I % sh -c "cat '%' | patch -d . -p1 -E --forward --no-backup-if-mismatch"
+        /bin/bash devices/common/custom.sh
+        if [ -f "devices/$TARGET/custom.sh" ]; then
+          /bin/bash "devices/$TARGET/custom.sh"
         fi
-        find "devices/common/patches" -type f -name '*.patch' ! -name '*.b.patch' -print0 | sort -z | xargs -I % -t -0 -n 1 sh -c "cat '%'  | patch -d './' -p1 -E --forward --no-backup-if-mismatch"
-        if [ -n "$(ls -A "devices/${{matrix.target}}/patches" 2>/dev/null)" ]; then
-          find "devices/${{matrix.target}}/patches" -type f -name '*.patch' -print0 | sort -z | xargs -I % -t -0 -n 1 sh -c "cat '%'  | patch -d './' -p1 -E --forward --no-backup-if-mismatch"
+        find devices/common/patches -type f -name '*.patch' ! -name '*.b.patch' -print0 |
+          sort -z |
+          xargs -r -0 -I % sh -c "cat '%' | patch -d . -p1 -E --forward --no-backup-if-mismatch"
+        if [ -d "devices/$TARGET/patches" ]; then
+          find "devices/$TARGET/patches" -type f -name '*.patch' -print0 |
+            sort -z |
+            xargs -r -0 -I % sh -c "cat '%' | patch -d . -p1 -E --forward --no-backup-if-mismatch"
         fi
-        cp -Rf ./diy/* ./ || true
-        if [ -f "devices/${{matrix.target}}/default-settings" ]; then
-          echo >> package/*/*/my-default-settings/files/etc/uci-defaults/99-default-settings
-          cat devices/${{matrix.target}}/default-settings >> package/*/*/my-default-settings/files/etc/uci-defaults/99-default-settings
-        fi
-        if [ -f "devices/${{matrix.target}}/.config" ]; then
-          echo >> .config
-          cat devices/${{matrix.target}}/.config >> .config
+        cp -a ./diy/. ./ 2>/dev/null || true
+        if [ -f "devices/$TARGET/.config" ]; then
+          printf '\n' >> .config
+          cat "devices/$TARGET/.config" >> .config
         fi
         make defconfig
 
-    - name: SSH connection to Actions
-      uses: kiddin9/debugger-action@master
-      if: contains(github.event.action, 'ssh')
-
-    - name: Compile private feeds
-      if: ${{ steps.private-feeds.outputs.enabled == 'true' }}
+    - name: Compile managed feeds
+      id: compile
+      continue-on-error: true
+      env:
+        PACKAGE_FILTER: ${{ steps.inputs.outputs.packages }}
       run: |
         cd openwrt
-        /bin/bash devices/common/compile-private-feeds.sh
+        /bin/bash devices/common/compile-managed-feeds.sh
 
-    - name: Prepare
+    - name: Generate package indexes
+      id: index
+      if: steps.compile.outcome == 'success' || steps.compile.outcome == 'failure'
+      continue-on-error: true
       run: |
         cd openwrt
-        mv -f package/feeds/kiddin9 kiddin9.b
-        mv -f feeds/packages/lang feeds/packages/lang.b
-        mv -f feeds/packages feeds/packages.b
-        mkdir package/feeds/kiddin9
-        cp -rf kiddin9.b/{wxbase,lib*,rapidjson,nftables,jpcre2,toml11,gn,curl,quickjspp,qt*,libtorrent*,openssl,mbedtls,ppp,cups,nftables} package/feeds/kiddin9/ || true
+        make package/index
 
-    - name: Compile the firmware
+    - name: Prepare package release
+      if: steps.compile.outcome == 'success' || steps.compile.outcome == 'failure'
+      env:
+        REQUIRE_IPK: ${{ steps.compile.outcome == 'success' }}
       run: |
-        cd openwrt
-          echo -e "$(($(nproc)+1)) thread compile"
-          fpkg="$(echo "${{github.event.action}}" | sed -e 's/\(aarch64_generic\|x86_64\|i386_pentium4\|arm_arm1176jzf-s_vfp\|aarch64_cortex-a72\|aarch64_cortex-a76\|arm_cortex-a7\|arm_cortex-a7_neon-vfpv4\|arm_cortex-a9\|arm_cortex-a15_neon-vfpv4\|arm_cortex-a5_vfpv4\|mipsel_24kc\|mips_24kc\|aarch64_cortex-a53\|arm_xscale\|arm_cortex-a9_vfpv3-d16\| [0-9][0-9.]*\| ssh\| noser\| cw\)//g' | sed -e 's/ //g')"
-          [ "$fpkg" ] || fpkg=".*"
-          echo "FPKG=$fpkg" >> $GITHUB_ENV
-          during="$(echo "${{github.event.action}}" | grep -o -E ' [0-9][0-9.]*' | sed -e 's/ //')"
-          function comp(){
-             echo "compile $ipk"
-             cp -rf kiddin9.b/$ipk package/feeds/kiddin9/
-             if [[ $ipk != luci-* ]]; then
-              mv -f feeds/packages.b feeds/packages
-              mv feeds/packages/lang.b feeds/packages/lang
-              [ "$(grep "PKG_BUILD_DEPENDS" package/feeds/kiddin9/$ipk/Makefile)" ] || mv feeds/packages/lang/node feeds/packages/lang/node.b
-             fi
-             (make -k package/$ipk/compile -j$(($(nproc)+1)) || make package/$ipk/compile V=s 2>&1 | tee error_$ipk.log | grep -i "Error 2" || rm -rf error_$ipk.log) || true
-             if [[ $ipk != luci-* ]]; then
-              mv -f feeds/packages/lang feeds/packages/lang.b 2>/dev/null || true
-              mv -f feeds/packages/lang.b/node.b feeds/packages/lang.b/node 2>/dev/null || true
-              mv -f feeds/packages feeds/packages.b
-              rm -rf package/feeds/kiddin9/$ipk
-             fi
-            }
-          for ipk in $(ls kiddin9.b | grep -E "$fpkg"); do
-            echo $ipk
-            comp
-          done
-          if [ -f ipk.txt ]; then
-              for ipk in $(cat ipk.txt)
-              do
-                comp
-              done
-          fi
-        echo "status=success" >> $GITHUB_ENV
+        "$GITHUB_WORKSPACE/devices/common/prepare-package-release.sh" \
+          "$GITHUB_WORKSPACE/openwrt" \
+          "$GITHUB_WORKSPACE/package-release" \
+          "$TARGET" \
+          "$GITHUB_WORKSPACE/sdk-metadata"
 
-    - name: Check space usage
-      run: df -hT
+    - name: Upload package build artifact
+      uses: actions/upload-artifact@v4.6.2
+      if: (steps.compile.outcome == 'success' || steps.compile.outcome == 'failure') && env.UPLOAD_PACKAGES_FOR_ARTIFACT == 'true'
+      with:
+        name: packages-${{ steps.sdk.outputs.release_tag }}-${{ steps.inputs.outputs.target }}
+        path: package-release
+        if-no-files-found: error
+        compression-level: 0
 
-    - name: Organize files
-      id: organize
-      run: |
-        mkdir packages
-        feeds=(kiddin9)
-        if [ -f openwrt/.private-feeds ]; then
-          while read -r feed; do
-            [ -n "$feed" ] && feeds+=("$feed")
-          done < openwrt/.private-feeds
-        fi
-        for feed in "${feeds[@]}"; do
-          mv -f openwrt/bin/packages/*/"$feed"/* packages/ 2>/dev/null || true
-        done
-        mv -f openwrt/.config packages/${{matrix.target}}.config || true
-        # cp -Rf openwrt/bin/packages/*/packages/python3* packages/
-        # cp -Rf openwrt/bin/packages/*/luci/luci-base* packages/ || true
-        echo "FIRMWARE=$PWD/packages" >> $GITHUB_ENV
-        Emoji=("🎉" "🤞" "✨" "🎁" "🎈" "🎄" "🎨" "💋" "🍓" "🍕" "🍉" "💐" "🌴" "🚀" "🛸" "🗽" "⛅" "🌈" "🔥" "⛄" "🐶" "🏅" "🦄" "🐤")
-        echo "EMOJI=${Emoji[$[$RANDOM % ${#Emoji[@]}]]}" >> $GITHUB_ENV
-        if [[ $(ls -l openwrt/error* | grep "^-" | wc -l) -le 0 ]]; then
-           echo "NAME=${Emoji[$[$RANDOM % ${#Emoji[@]}]]} ${{ env.date2 }} ${{matrix.target}} ${{ env.EMOJI }}" >> $GITHUB_ENV
-        else
-           echo "NAME=❌ ${{ env.date2 }} ${{matrix.target}} ❌" >> $GITHUB_ENV
-        fi
+    - name: Report skipped package release
+      if: steps.compile.outcome == 'success' && steps.index.outcome == 'success' && steps.inputs.outputs.release == 'true' && env.UPLOAD_PACKAGES_FOR_RELEASE == 'true' && steps.private-feeds.outputs.enabled != 'true'
+      run: echo "REPO_TOKEN is not configured; package artifacts are available but the GitHub Release is skipped."
 
-    - name: Upload firmware to cowtransfer
-      if: env.UPLOAD_FIRMWARE_TO_COWTRANSFER == 'true'
-      continue-on-error: true
+    - name: Create package release body
+      if: steps.compile.outcome == 'success' && steps.index.outcome == 'success' && steps.inputs.outputs.release == 'true' && env.UPLOAD_PACKAGES_FOR_RELEASE == 'true' && steps.private-feeds.outputs.enabled == 'true'
       run: |
-        curl -fsSL git.io/file-transfer | sh
-        cowurl=$(./transfer cow --block 2621440 -s --no-progress ${FIRMWARE})
-        cowurl=$(echo $cowurl | grep -o -E "https[^ ]*")
-        echo "COWURL=$cowurl" >> $GITHUB_ENV
-        echo "Download Link: ${{ env.EMOJI }} $cowurl ${{ env.EMOJI }} 🚀"
- 
-    - name: Upload firmware to WeTransfer
-      if: env.UPLOAD_FIRMWARE_TO_WETRANSFER == 'true'
-      continue-on-error: true
-      run: |
-        curl -fsSL git.io/file-transfer | sh
-        wetrans=$(./transfer wet -s -p 16 --no-progress ${FIRMWARE})
-        wetrans=$(echo $wetrans | grep -o -E "https[^ ]*")
-        echo "WETRANS=$wetrans" >> $GITHUB_ENV
-        echo "Download Link: ${{ env.EMOJI }} $wetrans ${{ env.EMOJI }} 🚀"
-        
-    - name: Create release
-      id: create_release
-      if: steps.private-feeds.outputs.enabled == 'true' && env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true'
-      continue-on-error: true
-      run: |
-        echo -e "墙内加速下载 🚀:\n" >> release.txt
-        echo -e "[腾讯云] (https://dl.openwrt.ai/latest/packages/${{matrix.target}}/ ☁)\n" >> release.txt
-        [ ${{ env.WETRANS }} ] && echo -e "[WeTransfer] (${{ env.WETRANS }} 🗽)\n" >> release.txt
-        [ ${{ env.COWURL }} ] && echo -e "[奶牛上传] (${{ env.COWURL }} 🐮)\n" >> release.txt
-        [ ${{ env.NOTICE }} ] && echo -e "${{ env.NOTICE }}" >> release.txt || true
+        {
+          echo "Packages built with Kwrt SDK"
+          echo
+          echo "- SDK repository: $SDK_REPOSITORY"
+          echo "- SDK release: $SDK_RELEASE_TAG"
+          echo "- SDK asset: $SDK_ASSET_NAME"
+          echo "- SDK SHA256: $SDK_SHA256"
+          echo "- Package architecture: $TARGET"
+          echo "- Private workspace: $PRIVATE_WORKSPACE_COMMIT"
+        } > release.txt
 
     - name: Upload packages for release
-      uses: softprops/action-gh-release@master
-      continue-on-error: true
-      if: steps.private-feeds.outputs.enabled == 'true' && env.UPLOAD_FIRMWARE_FOR_RELEASE == 'true'
+      uses: softprops/action-gh-release@v2.6.2
+      if: steps.compile.outcome == 'success' && steps.index.outcome == 'success' && steps.inputs.outputs.release == 'true' && env.UPLOAD_PACKAGES_FOR_RELEASE == 'true' && steps.private-feeds.outputs.enabled == 'true'
       env:
         GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
       with:
-        files: |
-            packages/*
-            openwrt/error*.log
-        name: ${{ env.NAME }}
-        tag_name: ${{ env.date }}_${{matrix.target}}
+        files: package-release/release-assets/*
+        name: Packages for ${{ steps.sdk.outputs.release_tag }}
+        tag_name: packages-${{ steps.sdk.outputs.release_tag }}
         body_path: release.txt
 
-    - name: deploy files to server
-      uses: easingthemes/ssh-deploy@main
-      if: env.SSH_PRIVATE_KEY && ! contains(github.event.action, 'noser')
-      with:
-        SSH_PRIVATE_KEY: ${{ env.SSH_PRIVATE_KEY }}
-        ARGS: "-avzr"
-        SOURCE: "packages/"
-        REMOTE_HOST: ${{ secrets.SERVER_HOST }}
-        REMOTE_USER: ${{ secrets.SERVER_USERNAME }}
-        REMOTE_PORT: ${{ secrets.SERVER_PORT }}
-        TARGET: "/www/wwwroot/dl.openwrt.ai/releases/24.10/packages/${{matrix.target}}/kiddin9/"
-        SCRIPT_AFTER: |
-            bash opkg ${{matrix.target}} &
-
-    - name: Upload packages for artifact
-      uses: actions/upload-artifact@main
-      continue-on-error: true
-      if: env.UPLOAD_FIRMWARE_FOR_ARTIFACT == 'true'
-      with:
-        name: ${{ env.date3 }} ${{matrix.target}}
-        path: packages
+    - name: Fail incomplete package build
+      if: steps.compile.outcome != 'success' || steps.index.outcome != 'success'
+      run: |
+        echo "Managed package compilation or package index generation failed."
+        exit 1

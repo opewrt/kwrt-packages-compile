@@ -295,24 +295,35 @@ jobs:
         fi
         cd openwrt
         chmod -R +x devices/*
+        apply_patch_file() {
+          local patch_file="$1"
+          if patch -d . -p1 --dry-run --forward --no-backup-if-mismatch < "$patch_file" >/dev/null 2>&1; then
+            patch -d . -p1 -E --forward --no-backup-if-mismatch < "$patch_file"
+          elif patch -d . -p1 --dry-run --reverse --no-backup-if-mismatch < "$patch_file" >/dev/null 2>&1; then
+            echo "Already applied: $patch_file"
+          else
+            echo "Cannot apply patch: $patch_file" >&2
+            return 1
+          fi
+        }
         devices/common/configure-feeds.sh "$GITHUB_WORKSPACE/sdk-metadata/MANIFEST.refs"
         if [ "${{ steps.private-feeds.outputs.enabled }}" = "true" ]; then
           export PRIVATE_FEEDS_ROOT="$GITHUB_WORKSPACE/private-workspace/luci-apps"
         fi
-        find devices/common/patches -type f -name '*.b.patch' -print0 |
-          sort -z |
-          xargs -r -0 -I % sh -c "cat '%' | patch -d . -p1 -E --forward --no-backup-if-mismatch"
+        while IFS= read -r -d '' patch_file; do
+          apply_patch_file "$patch_file"
+        done < <(find devices/common/patches -type f -name '*.b.patch' -print0 | sort -z)
         /bin/bash devices/common/custom.sh
         if [ -f "devices/$TARGET/custom.sh" ]; then
           /bin/bash "devices/$TARGET/custom.sh"
         fi
-        find devices/common/patches -type f -name '*.patch' ! -name '*.b.patch' -print0 |
-          sort -z |
-          xargs -r -0 -I % sh -c "cat '%' | patch -d . -p1 -E --forward --no-backup-if-mismatch"
+        while IFS= read -r -d '' patch_file; do
+          apply_patch_file "$patch_file"
+        done < <(find devices/common/patches -type f -name '*.patch' ! -name '*.b.patch' -print0 | sort -z)
         if [ -d "devices/$TARGET/patches" ]; then
-          find "devices/$TARGET/patches" -type f -name '*.patch' -print0 |
-            sort -z |
-            xargs -r -0 -I % sh -c "cat '%' | patch -d . -p1 -E --forward --no-backup-if-mismatch"
+          while IFS= read -r -d '' patch_file; do
+            apply_patch_file "$patch_file"
+          done < <(find "devices/$TARGET/patches" -type f -name '*.patch' -print0 | sort -z)
         fi
         cp -a ./diy/. ./ 2>/dev/null || true
         if [ -f "devices/$TARGET/.config" ]; then

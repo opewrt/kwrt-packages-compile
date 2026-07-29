@@ -1,81 +1,79 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-shards_dir="${1:-}"
+stages_dir="${1:-}"
 openwrt_dir="${2:-}"
 metadata_dir="${3:-}"
-expected_shards="${SHARD_COUNT:-8}"
+expected_stages="${STAGE_COUNT:-1}"
 
-if [ -z "$shards_dir" ] || [ -z "$openwrt_dir" ] || [ -z "$metadata_dir" ]; then
-	echo "Usage: merge-package-shards.sh SHARDS_DIR OPENWRT_DIR METADATA_DIR" >&2
+if [ -z "$stages_dir" ] || [ -z "$openwrt_dir" ] || [ -z "$metadata_dir" ]; then
+	echo "Usage: merge-package-shards.sh STAGES_DIR OPENWRT_DIR METADATA_DIR" >&2
+	exit 1
+fi
+if ! [[ "$expected_stages" =~ ^[1-9][0-9]*$ ]]; then
+	echo "Invalid expected stage count: $expected_stages" >&2
 	exit 1
 fi
 
 mkdir -p "$openwrt_dir/bin" "$openwrt_dir/build-results" "$openwrt_dir/build-logs" "$metadata_dir"
 results_dir="$openwrt_dir/build-results"
 printf 'feed\tpackage\tstatus\tlog\n' > "$results_dir/BUILD-RESULTS.tsv"
-: > "$results_dir/EXPECTED.txt"
-: > "$results_dir/SUCCESS.txt"
-: > "$results_dir/FAILED.txt"
-: > "$results_dir/SKIPPED.txt"
+for result_file in EXPECTED.txt SUCCESS.txt FAILED.txt SKIPPED.txt FAILED-DEPENDENCIES.txt; do
+	: > "$results_dir/$result_file"
+done
 
-mapfile -d '' shard_dirs < <(find "$shards_dir" -mindepth 1 -maxdepth 2 -type f -name SHARD.txt -printf '%h\0' | sort -z)
-if [ "${#shard_dirs[@]}" -ne "$expected_shards" ]; then
-	echo "Expected $expected_shards shard artifacts, found ${#shard_dirs[@]}" >&2
+mapfile -d '' stage_dirs < <(find "$stages_dir" -mindepth 1 -maxdepth 2 -type f -name STAGE.txt -printf '%h\0' | sort -z)
+if [ "${#stage_dirs[@]}" -ne "$expected_stages" ]; then
+	echo "Expected $expected_stages stage artifacts, found ${#stage_dirs[@]}" >&2
 	exit 1
 fi
 
-canonical="${shard_dirs[0]}"
-declare -A seen_shards=()
+canonical="${stage_dirs[0]}"
+declare -A seen_stages=()
 declare -A ipk_hashes=()
 
-for shard_dir in "${shard_dirs[@]}"; do
-	shard_index="$(sed -n 's/^shard_index=//p' "$shard_dir/SHARD.txt")"
-	shard_count="$(sed -n 's/^shard_count=//p' "$shard_dir/SHARD.txt")"
-	compile_outcome="$(sed -n 's/^compile_outcome=//p' "$shard_dir/SHARD.txt")"
-	if ! [[ "$shard_index" =~ ^[0-9]+$ ]] || [ "$shard_count" != "$expected_shards" ] || [ "$shard_index" -ge "$expected_shards" ]; then
-		echo "Invalid shard metadata in $shard_dir/SHARD.txt" >&2
+for stage_dir in "${stage_dirs[@]}"; do
+	stage_name="$(sed -n 's/^stage_name=//p' "$stage_dir/STAGE.txt")"
+	compile_outcome="$(sed -n 's/^compile_outcome=//p' "$stage_dir/STAGE.txt")"
+	if [ -z "$stage_name" ] || [ -n "${seen_stages[$stage_name]:-}" ]; then
+		echo "Missing or duplicate stage name in $stage_dir/STAGE.txt" >&2
 		exit 1
 	fi
+	seen_stages[$stage_name]=1
 	if [ "$compile_outcome" != "success" ]; then
-		echo "Package shard $shard_index did not compile successfully" >&2
+		echo "Package stage $stage_name did not compile successfully" >&2
 		exit 1
 	fi
-	if [ -n "${seen_shards[$shard_index]:-}" ]; then
-		echo "Duplicate shard artifact: $shard_index" >&2
-		exit 1
-	fi
-	seen_shards[$shard_index]=1
 
 	for metadata_file in openwrt.config managed-feeds private-workspace-commit sdk-metadata/MANIFEST.refs sdk-metadata/ASSETS.sha256sums sdk-metadata/SDK.refs; do
-		if [ ! -f "$shard_dir/metadata/$metadata_file" ]; then
-			echo "Missing shard metadata: $shard_dir/metadata/$metadata_file" >&2
+		if [ ! -f "$stage_dir/metadata/$metadata_file" ]; then
+			echo "Missing stage metadata: $stage_dir/metadata/$metadata_file" >&2
 			exit 1
 		fi
-		if ! cmp -s "$canonical/metadata/$metadata_file" "$shard_dir/metadata/$metadata_file"; then
-			echo "Shard metadata differs: $metadata_file" >&2
+		if ! cmp -s "$canonical/metadata/$metadata_file" "$stage_dir/metadata/$metadata_file"; then
+			echo "Stage metadata differs: $metadata_file" >&2
 			exit 1
 		fi
 	done
 
-	results="$shard_dir/build-results"
-	for result_file in BUILD-RESULTS.tsv EXPECTED.txt SUCCESS.txt FAILED.txt SKIPPED.txt; do
+	results="$stage_dir/build-results"
+	for result_file in BUILD-RESULTS.tsv EXPECTED.txt SUCCESS.txt FAILED.txt SKIPPED.txt FAILED-DEPENDENCIES.txt; do
 		if [ ! -f "$results/$result_file" ]; then
-			echo "Missing shard result: $results/$result_file" >&2
+			echo "Missing stage result: $results/$result_file" >&2
 			exit 1
 		fi
 	done
 	tail -n +2 "$results/BUILD-RESULTS.tsv" >> "$results_dir/BUILD-RESULTS.tsv"
-	for result_file in EXPECTED.txt SUCCESS.txt FAILED.txt SKIPPED.txt; do
+	for result_file in EXPECTED.txt SUCCESS.txt FAILED.txt SKIPPED.txt FAILED-DEPENDENCIES.txt; do
 		cat "$results/$result_file" >> "$results_dir/$result_file"
 	done
 
-	if [ -d "$shard_dir/build-logs" ]; then
-		cp -a "$shard_dir/build-logs/." "$openwrt_dir/build-logs/"
+	if [ -d "$stage_dir/build-logs" ]; then
+		cp -a "$stage_dir/build-logs/." "$openwrt_dir/build-logs/"
 	fi
-	if [ -d "$shard_dir/ipk/bin" ]; then
+	if [ -d "$stage_dir/ipk/bin" ]; then
 		while IFS= read -r -d '' ipk; do
-			relative_path="${ipk#"$shard_dir/ipk/"}"
+			relative_path="${ipk#"$stage_dir/ipk/"}"
 			ipk_name="${ipk##*/}"
 			ipk_sha256="$(sha256sum "$ipk" | cut -d ' ' -f 1)"
 			if [ -n "${ipk_hashes[$ipk_name]:-}" ] && [ "${ipk_hashes[$ipk_name]}" != "$ipk_sha256" ]; then
@@ -90,11 +88,11 @@ for shard_dir in "${shard_dirs[@]}"; do
 				exit 1
 			fi
 			cp -f "$ipk" "$destination"
-		done < <(find "$shard_dir/ipk/bin" -type f -name '*.ipk' -print0 | sort -z)
+		done < <(find "$stage_dir/ipk/bin" -type f -name '*.ipk' -print0 | sort -z)
 	fi
 done
 
-for result_file in EXPECTED.txt SUCCESS.txt FAILED.txt SKIPPED.txt; do
+for result_file in EXPECTED.txt SUCCESS.txt FAILED.txt SKIPPED.txt FAILED-DEPENDENCIES.txt; do
 	awk 'NF' "$results_dir/$result_file" | sort > "$results_dir/$result_file.sorted"
 	mv "$results_dir/$result_file.sorted" "$results_dir/$result_file"
 done
@@ -103,12 +101,16 @@ if [ ! -s "$results_dir/EXPECTED.txt" ]; then
 	echo "Package regex matched no managed source packages" >&2
 	exit 1
 fi
-if [ -s "$results_dir/FAILED.txt" ]; then
-	echo "One or more expected packages failed to compile" >&2
+if [ -s "$results_dir/FAILED.txt" ] || [ -s "$results_dir/FAILED-DEPENDENCIES.txt" ]; then
+	echo "One or more expected packages or foundation dependencies failed to compile" >&2
 	exit 1
 fi
 if [ -n "$(uniq -d "$results_dir/EXPECTED.txt")" ]; then
 	echo "Duplicate expected package results were found" >&2
+	exit 1
+fi
+if [ -n "$(uniq -d "$results_dir/SUCCESS.txt")" ]; then
+	echo "Duplicate successful package results were found" >&2
 	exit 1
 fi
 comm -3 "$results_dir/EXPECTED.txt" "$results_dir/SUCCESS.txt" > "$results_dir/RESULT-DIFFERENCE.txt"
@@ -129,7 +131,7 @@ success="$(wc -l < "$results_dir/SUCCESS.txt")"
 failed="$(wc -l < "$results_dir/FAILED.txt")"
 skipped="$(wc -l < "$results_dir/SKIPPED.txt")"
 {
-	echo "shard_count=$expected_shards"
+	echo "stage_count=$expected_stages"
 	echo "found=$found"
 	echo "matched=$matched"
 	echo "success=$success"
@@ -137,5 +139,5 @@ skipped="$(wc -l < "$results_dir/SKIPPED.txt")"
 	echo "skipped=$skipped"
 } > "$results_dir/SUMMARY.txt"
 
-printf 'shards=%s found=%s matched=%s success=%s failed=%s skipped=%s ipk=%s\n' \
-	"$expected_shards" "$found" "$matched" "$success" "$failed" "$skipped" "${#ipk_hashes[@]}"
+printf 'stages=%s found=%s matched=%s success=%s failed=%s skipped=%s ipk=%s\n' \
+	"$expected_stages" "$found" "$matched" "$success" "$failed" "$skipped" "${#ipk_hashes[@]}"

@@ -143,15 +143,16 @@ jobs:
           echo "upload_release=$UPLOAD_PACKAGES_FOR_RELEASE"
         } >> "$GITHUB_OUTPUT"
 
-  build:
+  plan:
     needs: prepare
     runs-on: ubuntu-latest
-    timeout-minutes: 330
-    name: Build packages shard ${{ matrix.shard }}
-    strategy:
-      fail-fast: false
-      matrix:
-        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    timeout-minutes: 120
+    name: Plan staged package build
+    outputs:
+      matrix: ${{ steps.plan.outputs.matrix }}
+      stage_count: ${{ steps.plan.outputs.stage_count }}
+      sdk_tag: ${{ steps.sdk.outputs.release_tag }}
+      sdk_sha256: ${{ steps.sdk.outputs.sdk_sha256 }}
     env:
       TARGET: ${{ needs.prepare.outputs.target }}
       PACKAGE_FILTER: ${{ needs.prepare.outputs.packages }}
@@ -160,8 +161,6 @@ jobs:
       REQUESTED_SDK_ASSET: ${{ needs.prepare.outputs.sdk_asset }}
       REQUESTED_MAIN_COMMIT: ${{ needs.prepare.outputs.main_commit }}
       NOCACHE: ${{ needs.prepare.outputs.nocache }}
-      SHARD_INDEX: ${{ matrix.shard }}
-      SHARD_COUNT: '8'
 
     steps:
     - name: Checkout
@@ -239,7 +238,7 @@ jobs:
         DEBIAN_FRONTEND: noninteractive
       run: |
         sudo -E apt-get -qq update
-        sudo -E apt-get -qq install build-essential libncurses-dev zlib1g-dev gawk git \
+        sudo -E apt-get -qq install build-essential clang libncurses-dev zlib1g-dev gawk git \
           gettext libssl-dev xsltproc rsync wget unzip curl zstd ccache \
           llvm python3-pyelftools libpython3-dev aria2 jq qemu-utils rename \
           libelf-dev libgmp3-dev libmpc-dev libfuse-dev bc
@@ -269,26 +268,15 @@ jobs:
         path: .cache/sdk
         key: kwrt-sdk-${{ runner.os }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}
 
-    - name: Cache package downloads
-      uses: actions/cache@v4
+    - name: Restore package downloads
+      uses: actions/cache/restore@v4
       if: env.NOCACHE != 'true'
       with:
         path: /mnt/openwrt/dl
-        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-shard-${{ matrix.shard }}-${{ github.sha }}
+        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-plan-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
-          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-shard-${{ matrix.shard }}-
           kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-
           kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-
-
-    - name: Cache compiler output
-      uses: actions/cache@v4
-      if: env.NOCACHE != 'true'
-      with:
-        path: /mnt/openwrt/ccache
-        key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}-shard-${{ matrix.shard }}-${{ github.sha }}
-        restore-keys: |
-          kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}-shard-${{ matrix.shard }}-
-          kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}-
 
     - name: Download and verify Kwrt SDK
       run: |
@@ -303,112 +291,368 @@ jobs:
           (cd "$sdk_dir" && sha256sum -c -)
         echo "SDK_ARCHIVE=$sdk_archive" >> "$GITHUB_ENV"
 
-    - name: Extract and configure SDK
+    - name: Extract and configure final SDK tree
+      env:
+        PRIVATE_FEEDS_ROOT: ${{ steps.private-feeds.outputs.enabled == 'true' && format('{0}/private-workspace/luci-apps', github.workspace) || '' }}
+      run: |
+        "$GITHUB_WORKSPACE/devices/common/prepare-kwrt-sdk.sh" \
+          "$SDK_ARCHIVE" "$TARGET" "$GITHUB_WORKSPACE/sdk-metadata/MANIFEST.refs" \
+          "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/openwrt"
+
+    - name: Generate source and host build plan
+      id: plan
       run: |
         set -euo pipefail
-        rm -rf openwrt sdk-extract
-        mkdir -p openwrt sdk-extract
-        tar --zstd -xf "$SDK_ARCHIVE" -C sdk-extract
-        sdk_root="$(find sdk-extract -mindepth 1 -maxdepth 1 -type d -name '*sdk*' -print -quit)"
-        test -n "$sdk_root"
-        cp -a "$sdk_root/." openwrt/
-        rm -rf sdk-extract openwrt/dl openwrt/.ccache
-        find openwrt/bin -type f -name '*.ipk' -delete 2>/dev/null || true
+        cd "$GITHUB_WORKSPACE/openwrt"
+        mkdir -p build-plan
+        printdb_status=0
+        make printdb > tmp/.make-printdb 2> build-plan/make-printdb.stderr || printdb_status=$?
+        if [ "$printdb_status" -ne 0 ]; then
+          echo "make printdb failed with status $printdb_status" >&2
+          exit "$printdb_status"
+        fi
+        python3 devices/common/plan-package-build.py \
+          --packageinfo tmp/.packageinfo \
+          --printdb tmp/.make-printdb \
+          --managed-feeds .managed-feeds \
+          --package-filter "$PACKAGE_FILTER" \
+          --output build-plan
+        matrix="$(jq -c . build-plan/matrix.json)"
+        stage_count="$(jq -r .stage_count build-plan/plan.json)"
+        {
+          echo "matrix=$matrix"
+          echo "stage_count=$stage_count"
+        } >> "$GITHUB_OUTPUT"
+
+    - name: Save planner download cache
+      uses: actions/cache/save@v4
+      if: always() && env.NOCACHE != 'true'
+      with:
+        path: /mnt/openwrt/dl
+        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-plan-${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: Package prepared SDK and plan
+      run: |
+        set -euo pipefail
+        mkdir -p "$GITHUB_WORKSPACE/package-plan"
+        tar --zstd -cf "$GITHUB_WORKSPACE/package-plan/prepared-sdk.tar.zst" \
+          --exclude='./dl' --exclude='./.ccache' -C "$GITHUB_WORKSPACE/openwrt" .
+        cp -a "$GITHUB_WORKSPACE/openwrt/build-plan" "$GITHUB_WORKSPACE/package-plan/"
+        cp -a "$GITHUB_WORKSPACE/sdk-metadata" "$GITHUB_WORKSPACE/package-plan/"
+        printf '%s\n' "$PRIVATE_WORKSPACE_COMMIT" > "$GITHUB_WORKSPACE/package-plan/private-workspace-commit"
+        if [ -d "$GITHUB_WORKSPACE/private-workspace/luci-apps" ]; then
+          tar --zstd --exclude-vcs -cf "$GITHUB_WORKSPACE/package-plan/private-feeds.tar.zst" \
+            -C "$GITHUB_WORKSPACE/private-workspace" luci-apps
+        fi
+
+    - name: Upload package build plan
+      uses: actions/upload-artifact@v4.6.2
+      with:
+        name: package-build-plan-${{ github.run_id }}-${{ github.run_attempt }}
+        path: package-plan
+        if-no-files-found: error
+        compression-level: 0
+
+  foundation:
+    needs: [prepare, plan]
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    name: Build shared foundation
+    env:
+      TARGET: ${{ needs.prepare.outputs.target }}
+      NOCACHE: ${{ needs.prepare.outputs.nocache }}
+      SDK_TAG: ${{ needs.plan.outputs.sdk_tag }}
+      SDK_SHA256: ${{ needs.plan.outputs.sdk_sha256 }}
+      STAGE_NAME: foundation
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4.3.0
+
+    - name: Free disk space
+      uses: coder-xiaomo/free-disk-space@1.4.0
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        docker-images: true
+        swap-storage: true
+
+    - name: Initialize environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install build-essential clang libncurses-dev zlib1g-dev gawk git \
+          gettext libssl-dev xsltproc rsync wget unzip curl zstd ccache \
+          llvm python3-pyelftools libpython3-dev aria2 jq qemu-utils rename \
+          libelf-dev libgmp3-dev libmpc-dev libfuse-dev bc
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p -m 777 /mnt/openwrt/dl /mnt/openwrt/ccache
+
+    - name: Download package build plan
+      uses: actions/download-artifact@v4.3.0
+      with:
+        name: package-build-plan-${{ github.run_id }}-${{ github.run_attempt }}
+        path: package-plan
+
+    - name: Restore package downloads
+      uses: actions/cache/restore@v4
+      if: env.NOCACHE != 'true'
+      with:
+        path: /mnt/openwrt/dl
+        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-foundation-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-
+          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-
+
+    - name: Restore compiler cache
+      uses: actions/cache/restore@v4
+      if: env.NOCACHE != 'true'
+      with:
+        path: /mnt/openwrt/ccache
+        key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-foundation-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-
+
+    - name: Restore prepared SDK
+      run: |
+        set -euo pipefail
+        mkdir -p openwrt
+        tar --zstd -xf package-plan/prepared-sdk.tar.zst -C openwrt
+        if [ -f package-plan/private-feeds.tar.zst ]; then
+          mkdir -p "$GITHUB_WORKSPACE/private-workspace"
+          tar --zstd -xf package-plan/private-feeds.tar.zst -C "$GITHUB_WORKSPACE/private-workspace"
+        fi
         ln -s /mnt/openwrt/dl openwrt/dl
         ln -s /mnt/openwrt/ccache openwrt/.ccache
-        cp -a devices openwrt/
-        cp -a devices/common/. openwrt/
-        if [ -d "devices/$TARGET" ]; then
-          cp -a "devices/$TARGET/." openwrt/
-        fi
-        cd openwrt
-        chmod -R +x devices/*
-        apply_patch_file() {
-          local patch_file="$1"
-          if patch -d . -p1 --dry-run --forward --no-backup-if-mismatch < "$patch_file" >/dev/null 2>&1; then
-            patch -d . -p1 -E --forward --no-backup-if-mismatch < "$patch_file"
-          elif patch -d . -p1 --dry-run --reverse --no-backup-if-mismatch < "$patch_file" >/dev/null 2>&1; then
-            echo "Already applied: $patch_file"
-          else
-            echo "Cannot apply patch: $patch_file" >&2
-            return 1
-          fi
-        }
-        devices/common/configure-feeds.sh "$GITHUB_WORKSPACE/sdk-metadata/MANIFEST.refs"
-        if [ "${{ steps.private-feeds.outputs.enabled }}" = "true" ]; then
-          export PRIVATE_FEEDS_ROOT="$GITHUB_WORKSPACE/private-workspace/luci-apps"
-        fi
-        while IFS= read -r -d '' patch_file; do
-          apply_patch_file "$patch_file"
-        done < <(find devices/common/patches -type f -name '*.b.patch' -print0 | sort -z)
-        /bin/bash devices/common/custom.sh
-        if [ -f "devices/$TARGET/custom.sh" ]; then
-          /bin/bash "devices/$TARGET/custom.sh"
-        fi
-        while IFS= read -r -d '' patch_file; do
-          apply_patch_file "$patch_file"
-        done < <(find devices/common/patches -type f -name '*.patch' ! -name '*.b.patch' -print0 | sort -z)
-        if [ -d "devices/$TARGET/patches" ]; then
-          while IFS= read -r -d '' patch_file; do
-            apply_patch_file "$patch_file"
-          done < <(find "devices/$TARGET/patches" -type f -name '*.patch' -print0 | sort -z)
-        fi
-        cp -a ./diy/. ./ 2>/dev/null || true
-        if [ -f "devices/$TARGET/.config" ]; then
-          printf '\n' >> .config
-          cat "devices/$TARGET/.config" >> .config
-        fi
-        make defconfig
 
-    - name: Compile managed feeds shard
+    - name: Compile shared foundation
       id: compile
       continue-on-error: true
       run: |
         cd openwrt
-        /bin/bash devices/common/compile-managed-feeds.sh
+        BUILD_PLAN_DIR="$GITHUB_WORKSPACE/package-plan/build-plan" \
+          /bin/bash devices/common/compile-package-stage.sh \
+          "$GITHUB_WORKSPACE/package-plan/build-plan/foundation.tsv" "$STAGE_NAME" foundation
 
-    - name: Prepare shard artifact
-      if: steps.compile.outcome == 'success' || steps.compile.outcome == 'failure'
+    - name: Save foundation download cache
+      uses: actions/cache/save@v4
+      if: always() && env.NOCACHE != 'true'
+      with:
+        path: /mnt/openwrt/dl
+        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-foundation-${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: Save foundation compiler cache
+      uses: actions/cache/save@v4
+      if: always() && env.NOCACHE != 'true'
+      with:
+        path: /mnt/openwrt/ccache
+        key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-foundation-${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: Prepare foundation state and result
+      if: always() && steps.compile.outcome != 'skipped'
       run: |
         set -euo pipefail
-        artifact="$GITHUB_WORKSPACE/package-shard"
-        mkdir -p "$artifact/ipk" "$artifact/metadata/sdk-metadata"
-        if [ -d "$GITHUB_WORKSPACE/openwrt/bin" ]; then
-          rsync -a --prune-empty-dirs --include='*/' --include='*.ipk' --exclude='*' \
-            "$GITHUB_WORKSPACE/openwrt/bin/" "$artifact/ipk/bin/"
-        fi
-        cp -a "$GITHUB_WORKSPACE/openwrt/build-results" "$artifact/"
-        if [ -d "$GITHUB_WORKSPACE/openwrt/build-logs" ]; then
-          cp -a "$GITHUB_WORKSPACE/openwrt/build-logs" "$artifact/"
-        fi
-        cp -f "$GITHUB_WORKSPACE/openwrt/.config" "$artifact/metadata/openwrt.config"
-        cp -f "$GITHUB_WORKSPACE/openwrt/.managed-feeds" "$artifact/metadata/managed-feeds"
-        printf '%s\n' "$PRIVATE_WORKSPACE_COMMIT" > "$artifact/metadata/private-workspace-commit"
-        cp -a "$GITHUB_WORKSPACE/sdk-metadata/." "$artifact/metadata/sdk-metadata/"
+        artifact="$GITHUB_WORKSPACE/package-stage"
+        mkdir -p "$artifact/ipk" "$artifact/metadata/sdk-metadata" "$GITHUB_WORKSPACE/foundation-state"
+        rsync -a --prune-empty-dirs --include='*/' --include='*.ipk' --exclude='*' openwrt/bin/ "$artifact/ipk/bin/"
+        cp -a openwrt/build-results "$artifact/"
+        if [ -d openwrt/build-logs ]; then cp -a openwrt/build-logs "$artifact/"; fi
+        cp -f openwrt/.config "$artifact/metadata/openwrt.config"
+        cp -f openwrt/.managed-feeds "$artifact/metadata/managed-feeds"
+        cp -f package-plan/private-workspace-commit "$artifact/metadata/private-workspace-commit"
+        cp -a package-plan/sdk-metadata/. "$artifact/metadata/sdk-metadata/"
         {
-          echo "shard_index=$SHARD_INDEX"
-          echo "shard_count=$SHARD_COUNT"
+          echo "stage_name=$STAGE_NAME"
           echo "compile_outcome=${{ steps.compile.outcome }}"
-        } > "$artifact/SHARD.txt"
+        } > "$artifact/STAGE.txt"
+        test -d openwrt/staging_dir
+        tar --zstd -cf "$GITHUB_WORKSPACE/foundation-state/foundation-state.tar.zst" \
+          -C openwrt staging_dir
 
-    - name: Upload package shard artifact
+    - name: Upload foundation result
       uses: actions/upload-artifact@v4.6.2
-      if: steps.compile.outcome == 'success' || steps.compile.outcome == 'failure'
+      if: always() && steps.compile.outcome != 'skipped'
       with:
-        name: package-shard-${{ steps.sdk.outputs.release_tag }}-${{ env.TARGET }}-${{ matrix.shard }}
-        path: package-shard
+        name: package-stage-foundation
+        path: package-stage
         if-no-files-found: error
         compression-level: 0
 
-    - name: Fail incomplete package shard
+    - name: Upload foundation state
+      uses: actions/upload-artifact@v4.6.2
+      if: always() && steps.compile.outcome != 'skipped'
+      with:
+        name: package-foundation-state-${{ github.run_id }}-${{ github.run_attempt }}
+        path: foundation-state
+        if-no-files-found: error
+        compression-level: 0
+
+    - name: Fail incomplete foundation
       if: steps.compile.outcome != 'success'
       run: |
-        echo "Managed package compilation failed in shard $SHARD_INDEX."
+        echo "Shared foundation compilation failed after caches and logs were saved."
+        exit 1
+
+  leaf:
+    needs: [prepare, plan, foundation]
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    name: Build leaf ${{ matrix.bundle }}
+    strategy:
+      fail-fast: false
+      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
+    env:
+      TARGET: ${{ needs.prepare.outputs.target }}
+      NOCACHE: ${{ needs.prepare.outputs.nocache }}
+      SDK_TAG: ${{ needs.plan.outputs.sdk_tag }}
+      SDK_SHA256: ${{ needs.plan.outputs.sdk_sha256 }}
+      STAGE_NAME: ${{ matrix.bundle }}
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4.3.0
+
+    - name: Free disk space
+      uses: coder-xiaomo/free-disk-space@1.4.0
+      with:
+        tool-cache: false
+        android: true
+        dotnet: true
+        haskell: true
+        large-packages: true
+        docker-images: true
+        swap-storage: true
+
+    - name: Initialize environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install build-essential clang libncurses-dev zlib1g-dev gawk git \
+          gettext libssl-dev xsltproc rsync wget unzip curl zstd ccache \
+          llvm python3-pyelftools libpython3-dev aria2 jq qemu-utils rename \
+          libelf-dev libgmp3-dev libmpc-dev libfuse-dev bc
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+        sudo mkdir -p -m 777 /mnt/openwrt/dl /mnt/openwrt/ccache
+
+    - name: Download package build plan
+      uses: actions/download-artifact@v4.3.0
+      with:
+        name: package-build-plan-${{ github.run_id }}-${{ github.run_attempt }}
+        path: package-plan
+
+    - name: Download foundation state
+      uses: actions/download-artifact@v4.3.0
+      with:
+        name: package-foundation-state-${{ github.run_id }}-${{ github.run_attempt }}
+        path: foundation-state
+
+    - name: Restore package downloads
+      uses: actions/cache/restore@v4
+      if: env.NOCACHE != 'true'
+      with:
+        path: /mnt/openwrt/dl
+        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ matrix.bundle }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-foundation-${{ github.run_id }}-${{ github.run_attempt }}
+          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-
+          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-
+
+    - name: Restore compiler cache
+      uses: actions/cache/restore@v4
+      if: env.NOCACHE != 'true'
+      with:
+        path: /mnt/openwrt/ccache
+        key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-${{ matrix.bundle }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-foundation-${{ github.run_id }}-${{ github.run_attempt }}
+          kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-
+
+    - name: Restore prepared SDK and foundation
+      run: |
+        set -euo pipefail
+        mkdir -p openwrt
+        tar --zstd -xf package-plan/prepared-sdk.tar.zst -C openwrt
+        if [ -f package-plan/private-feeds.tar.zst ]; then
+          mkdir -p "$GITHUB_WORKSPACE/private-workspace"
+          tar --zstd -xf package-plan/private-feeds.tar.zst -C "$GITHUB_WORKSPACE/private-workspace"
+        fi
+        tar --zstd -xf foundation-state/foundation-state.tar.zst -C openwrt
+        find openwrt/bin -type f -name '*.ipk' -delete 2>/dev/null || true
+        ln -s /mnt/openwrt/dl openwrt/dl
+        ln -s /mnt/openwrt/ccache openwrt/.ccache
+
+    - name: Compile leaf bundle without dependencies
+      id: compile
+      continue-on-error: true
+      run: |
+        cd openwrt
+        BUILD_PLAN_DIR="$GITHUB_WORKSPACE/package-plan/build-plan" \
+          /bin/bash devices/common/compile-package-stage.sh \
+          "$GITHUB_WORKSPACE/package-plan/build-plan/bundles/$STAGE_NAME.tsv" "$STAGE_NAME" leaf
+
+    - name: Save leaf download cache
+      uses: actions/cache/save@v4
+      if: always() && env.NOCACHE != 'true'
+      with:
+        path: /mnt/openwrt/dl
+        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ matrix.bundle }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: Save leaf compiler cache
+      uses: actions/cache/save@v4
+      if: always() && env.NOCACHE != 'true'
+      with:
+        path: /mnt/openwrt/ccache
+        key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-${{ matrix.bundle }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: Prepare leaf result
+      if: always() && steps.compile.outcome != 'skipped'
+      run: |
+        set -euo pipefail
+        artifact="$GITHUB_WORKSPACE/package-stage"
+        mkdir -p "$artifact/ipk" "$artifact/metadata/sdk-metadata"
+        rsync -a --prune-empty-dirs --include='*/' --include='*.ipk' --exclude='*' openwrt/bin/ "$artifact/ipk/bin/"
+        cp -a openwrt/build-results "$artifact/"
+        if [ -d openwrt/build-logs ]; then cp -a openwrt/build-logs "$artifact/"; fi
+        cp -f openwrt/.config "$artifact/metadata/openwrt.config"
+        cp -f openwrt/.managed-feeds "$artifact/metadata/managed-feeds"
+        cp -f package-plan/private-workspace-commit "$artifact/metadata/private-workspace-commit"
+        cp -a package-plan/sdk-metadata/. "$artifact/metadata/sdk-metadata/"
+        {
+          echo "stage_name=$STAGE_NAME"
+          echo "compile_outcome=${{ steps.compile.outcome }}"
+        } > "$artifact/STAGE.txt"
+
+    - name: Upload leaf result and logs
+      uses: actions/upload-artifact@v4.6.2
+      if: always() && steps.compile.outcome != 'skipped'
+      with:
+        name: package-stage-${{ matrix.bundle }}
+        path: package-stage
+        if-no-files-found: error
+        compression-level: 0
+
+    - name: Fail incomplete leaf bundle
+      if: steps.compile.outcome != 'success'
+      run: |
+        echo "Leaf bundle $STAGE_NAME failed after caches and logs were saved."
         exit 1
 
   merge-release:
-    needs: [prepare, build]
-    if: always() && needs.prepare.result == 'success' && github.repository_owner == 'opewrt'
+    needs: [prepare, plan, foundation, leaf]
+    if: >-
+      always() &&
+      needs.prepare.result == 'success' &&
+      needs.plan.result == 'success' &&
+      needs.foundation.result == 'success' &&
+      needs.leaf.result == 'success' &&
+      github.repository_owner == 'opewrt'
     runs-on: ubuntu-latest
     name: Merge packages and release
     env:
@@ -416,10 +660,9 @@ jobs:
       PACKAGE_FILTER: ${{ needs.prepare.outputs.packages }}
       SDK_REPOSITORY: ${{ needs.prepare.outputs.sdk_repository }}
       CREATE_RELEASE: ${{ needs.prepare.outputs.release }}
-      NOCACHE: ${{ needs.prepare.outputs.nocache }}
       UPLOAD_PACKAGES_FOR_ARTIFACT: ${{ needs.prepare.outputs.upload_artifact }}
       UPLOAD_PACKAGES_FOR_RELEASE: ${{ needs.prepare.outputs.upload_release }}
-      SHARD_COUNT: '8'
+      STAGE_COUNT: ${{ needs.plan.outputs.stage_count }}
 
     steps:
     - name: Checkout
@@ -427,27 +670,32 @@ jobs:
       with:
         fetch-depth: 0
 
-    - name: Download package shard artifacts
+    - name: Download package build plan
       uses: actions/download-artifact@v4.3.0
       with:
-        pattern: package-shard-*
-        path: package-shards
+        name: package-build-plan-${{ github.run_id }}-${{ github.run_attempt }}
+        path: package-plan
 
-    - name: Read shard build selection
+    - name: Download package stage artifacts
+      uses: actions/download-artifact@v4.3.0
+      with:
+        pattern: package-stage-*
+        path: package-stages
+
+    - name: Read build selection
       id: selection
       run: |
         set -euo pipefail
-        sdk_refs="$(find "$GITHUB_WORKSPACE/package-shards" -path '*/metadata/sdk-metadata/SDK.refs' -print -quit)"
-        test -n "$sdk_refs"
-        sdk_tag="$(sed -n 's/^sdk_release_tag=//p' "$sdk_refs")"
-        sdk_asset="$(sed -n 's/^sdk_asset=//p' "$sdk_refs")"
-        main_commit="$(<"${sdk_refs%/sdk-metadata/SDK.refs}/private-workspace-commit")"
-        test -n "$sdk_tag"
+        source package-plan/sdk-metadata/SDK.refs
+        main_commit="$(<package-plan/private-workspace-commit)"
+        test -n "$sdk_release_tag"
         test -n "$sdk_asset"
         test -n "$main_commit"
         {
-          echo "MERGE_SDK_TAG=$sdk_tag"
-          echo "MERGE_SDK_ASSET=$sdk_asset"
+          echo "SDK_RELEASE_TAG=$sdk_release_tag"
+          echo "SDK_ASSET_NAME=$sdk_asset"
+          echo "SDK_SHA256=$sdk_sha256"
+          echo "main_commit=$main_commit"
         } >> "$GITHUB_ENV"
         echo "main_commit=$main_commit" >> "$GITHUB_OUTPUT"
 
@@ -464,7 +712,7 @@ jobs:
         fi
 
     - name: Checkout private feeds workspace metadata
-      if: steps.private-feeds.outputs.enabled == 'true'
+      if: steps.private-feeds.outputs.enabled == 'true' && steps.selection.outputs.main_commit != 'none'
       uses: actions/checkout@v4.3.0
       with:
         repository: opewrt/kwrt-main
@@ -492,61 +740,21 @@ jobs:
         sudo -E apt-get -qq clean
         sudo timedatectl set-timezone "$TZ"
 
-    - name: Resolve Kwrt SDK release
-      id: sdk
-      run: |
-        "$GITHUB_WORKSPACE/devices/common/resolve-kwrt-sdk.sh" \
-          "$SDK_REPOSITORY" \
-          "$TARGET" \
-          "$MERGE_SDK_TAG" \
-          "$MERGE_SDK_ASSET" \
-          "$GITHUB_WORKSPACE/sdk-metadata-resolved"
-
-    - name: Verify resolved SDK metadata
+    - name: Restore prepared SDK
       run: |
         set -euo pipefail
-        shard_metadata="$(find "$GITHUB_WORKSPACE/package-shards" -path '*/metadata/sdk-metadata' -type d -print -quit)"
-        test -n "$shard_metadata"
-        for metadata_file in MANIFEST.refs ASSETS.sha256sums SDK.refs; do
-          cmp "$shard_metadata/$metadata_file" "$GITHUB_WORKSPACE/sdk-metadata-resolved/$metadata_file"
-        done
-
-    - name: Cache Kwrt SDK
-      uses: actions/cache@v4
-      if: env.NOCACHE != 'true'
-      with:
-        path: .cache/sdk
-        key: kwrt-sdk-${{ runner.os }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}
-
-    - name: Download and verify Kwrt SDK
-      run: |
-        set -euo pipefail
-        sdk_dir="$GITHUB_WORKSPACE/.cache/sdk/$SDK_RELEASE_TAG"
-        sdk_archive="$sdk_dir/$SDK_ASSET_NAME"
-        mkdir -p "$sdk_dir"
-        if [ ! -f "$sdk_archive" ]; then
-          curl -fL --retry 5 --retry-delay 5 "$SDK_DOWNLOAD_URL" -o "$sdk_archive"
+        mkdir -p openwrt
+        tar --zstd -xf package-plan/prepared-sdk.tar.zst -C openwrt
+        if [ -f package-plan/private-feeds.tar.zst ]; then
+          mkdir -p "$GITHUB_WORKSPACE/private-workspace"
+          tar --zstd -xf package-plan/private-feeds.tar.zst -C "$GITHUB_WORKSPACE/private-workspace"
         fi
-        printf '%s  %s\n' "$SDK_SHA256" "$SDK_ASSET_NAME" |
-          (cd "$sdk_dir" && sha256sum -c -)
-        echo "SDK_ARCHIVE=$sdk_archive" >> "$GITHUB_ENV"
-
-    - name: Extract Kwrt SDK
-      run: |
-        set -euo pipefail
-        rm -rf openwrt sdk-extract
-        mkdir -p openwrt sdk-extract
-        tar --zstd -xf "$SDK_ARCHIVE" -C sdk-extract
-        sdk_root="$(find sdk-extract -mindepth 1 -maxdepth 1 -type d -name '*sdk*' -print -quit)"
-        test -n "$sdk_root"
-        cp -a "$sdk_root/." openwrt/
-        rm -rf sdk-extract
         find openwrt/bin -type f -name '*.ipk' -delete 2>/dev/null || true
 
-    - name: Merge and verify package shards
+    - name: Merge and verify package stages
       run: |
         /bin/bash "$GITHUB_WORKSPACE/devices/common/merge-package-shards.sh" \
-          "$GITHUB_WORKSPACE/package-shards" \
+          "$GITHUB_WORKSPACE/package-stages" \
           "$GITHUB_WORKSPACE/openwrt" \
           "$GITHUB_WORKSPACE/sdk-metadata"
 
@@ -567,7 +775,7 @@ jobs:
       uses: actions/upload-artifact@v4.6.2
       if: env.UPLOAD_PACKAGES_FOR_ARTIFACT == 'true'
       with:
-        name: packages-${{ steps.sdk.outputs.release_tag }}-${{ env.TARGET }}
+        name: packages-${{ needs.plan.outputs.sdk_tag }}-${{ env.TARGET }}
         path: package-release
         if-no-files-found: error
         compression-level: 0
@@ -597,6 +805,6 @@ jobs:
         GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
       with:
         files: package-release/release-assets/*
-        name: Packages for ${{ steps.sdk.outputs.release_tag }}
-        tag_name: packages-${{ steps.sdk.outputs.release_tag }}
+        name: Packages for ${{ needs.plan.outputs.sdk_tag }}
+        tag_name: packages-${{ needs.plan.outputs.sdk_tag }}
         body_path: release.txt

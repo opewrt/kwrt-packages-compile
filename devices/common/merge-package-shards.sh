@@ -1,0 +1,141 @@
+#!/usr/bin/env bash
+set -euo pipefail
+
+shards_dir="${1:-}"
+openwrt_dir="${2:-}"
+metadata_dir="${3:-}"
+expected_shards="${SHARD_COUNT:-8}"
+
+if [ -z "$shards_dir" ] || [ -z "$openwrt_dir" ] || [ -z "$metadata_dir" ]; then
+	echo "Usage: merge-package-shards.sh SHARDS_DIR OPENWRT_DIR METADATA_DIR" >&2
+	exit 1
+fi
+
+mkdir -p "$openwrt_dir/bin" "$openwrt_dir/build-results" "$openwrt_dir/build-logs" "$metadata_dir"
+results_dir="$openwrt_dir/build-results"
+printf 'feed\tpackage\tstatus\tlog\n' > "$results_dir/BUILD-RESULTS.tsv"
+: > "$results_dir/EXPECTED.txt"
+: > "$results_dir/SUCCESS.txt"
+: > "$results_dir/FAILED.txt"
+: > "$results_dir/SKIPPED.txt"
+
+mapfile -d '' shard_dirs < <(find "$shards_dir" -mindepth 1 -maxdepth 2 -type f -name SHARD.txt -printf '%h\0' | sort -z)
+if [ "${#shard_dirs[@]}" -ne "$expected_shards" ]; then
+	echo "Expected $expected_shards shard artifacts, found ${#shard_dirs[@]}" >&2
+	exit 1
+fi
+
+canonical="${shard_dirs[0]}"
+declare -A seen_shards=()
+declare -A ipk_hashes=()
+
+for shard_dir in "${shard_dirs[@]}"; do
+	shard_index="$(sed -n 's/^shard_index=//p' "$shard_dir/SHARD.txt")"
+	shard_count="$(sed -n 's/^shard_count=//p' "$shard_dir/SHARD.txt")"
+	compile_outcome="$(sed -n 's/^compile_outcome=//p' "$shard_dir/SHARD.txt")"
+	if ! [[ "$shard_index" =~ ^[0-9]+$ ]] || [ "$shard_count" != "$expected_shards" ] || [ "$shard_index" -ge "$expected_shards" ]; then
+		echo "Invalid shard metadata in $shard_dir/SHARD.txt" >&2
+		exit 1
+	fi
+	if [ "$compile_outcome" != "success" ]; then
+		echo "Package shard $shard_index did not compile successfully" >&2
+		exit 1
+	fi
+	if [ -n "${seen_shards[$shard_index]:-}" ]; then
+		echo "Duplicate shard artifact: $shard_index" >&2
+		exit 1
+	fi
+	seen_shards[$shard_index]=1
+
+	for metadata_file in openwrt.config managed-feeds private-workspace-commit sdk-metadata/MANIFEST.refs sdk-metadata/ASSETS.sha256sums sdk-metadata/SDK.refs; do
+		if [ ! -f "$shard_dir/metadata/$metadata_file" ]; then
+			echo "Missing shard metadata: $shard_dir/metadata/$metadata_file" >&2
+			exit 1
+		fi
+		if ! cmp -s "$canonical/metadata/$metadata_file" "$shard_dir/metadata/$metadata_file"; then
+			echo "Shard metadata differs: $metadata_file" >&2
+			exit 1
+		fi
+	done
+
+	results="$shard_dir/build-results"
+	for result_file in BUILD-RESULTS.tsv EXPECTED.txt SUCCESS.txt FAILED.txt SKIPPED.txt; do
+		if [ ! -f "$results/$result_file" ]; then
+			echo "Missing shard result: $results/$result_file" >&2
+			exit 1
+		fi
+	done
+	tail -n +2 "$results/BUILD-RESULTS.tsv" >> "$results_dir/BUILD-RESULTS.tsv"
+	for result_file in EXPECTED.txt SUCCESS.txt FAILED.txt SKIPPED.txt; do
+		cat "$results/$result_file" >> "$results_dir/$result_file"
+	done
+
+	if [ -d "$shard_dir/build-logs" ]; then
+		cp -a "$shard_dir/build-logs/." "$openwrt_dir/build-logs/"
+	fi
+	if [ -d "$shard_dir/ipk/bin" ]; then
+		while IFS= read -r -d '' ipk; do
+			relative_path="${ipk#"$shard_dir/ipk/"}"
+			ipk_name="${ipk##*/}"
+			ipk_sha256="$(sha256sum "$ipk" | cut -d ' ' -f 1)"
+			if [ -n "${ipk_hashes[$ipk_name]:-}" ] && [ "${ipk_hashes[$ipk_name]}" != "$ipk_sha256" ]; then
+				echo "Conflicting IPK files named $ipk_name" >&2
+				exit 1
+			fi
+			ipk_hashes[$ipk_name]="$ipk_sha256"
+			destination="$openwrt_dir/$relative_path"
+			mkdir -p "${destination%/*}"
+			if [ -f "$destination" ] && ! cmp -s "$ipk" "$destination"; then
+				echo "Conflicting IPK path: $relative_path" >&2
+				exit 1
+			fi
+			cp -f "$ipk" "$destination"
+		done < <(find "$shard_dir/ipk/bin" -type f -name '*.ipk' -print0 | sort -z)
+	fi
+done
+
+for result_file in EXPECTED.txt SUCCESS.txt FAILED.txt SKIPPED.txt; do
+	awk 'NF' "$results_dir/$result_file" | sort > "$results_dir/$result_file.sorted"
+	mv "$results_dir/$result_file.sorted" "$results_dir/$result_file"
+done
+
+if [ ! -s "$results_dir/EXPECTED.txt" ]; then
+	echo "Package regex matched no managed source packages" >&2
+	exit 1
+fi
+if [ -s "$results_dir/FAILED.txt" ]; then
+	echo "One or more expected packages failed to compile" >&2
+	exit 1
+fi
+if [ -n "$(uniq -d "$results_dir/EXPECTED.txt")" ]; then
+	echo "Duplicate expected package results were found" >&2
+	exit 1
+fi
+comm -3 "$results_dir/EXPECTED.txt" "$results_dir/SUCCESS.txt" > "$results_dir/RESULT-DIFFERENCE.txt"
+if [ -s "$results_dir/RESULT-DIFFERENCE.txt" ]; then
+	echo "Not all expected packages have a successful result" >&2
+	cat "$results_dir/RESULT-DIFFERENCE.txt" >&2
+	exit 1
+fi
+rm -f "$results_dir/RESULT-DIFFERENCE.txt"
+
+cp -f "$canonical/metadata/openwrt.config" "$openwrt_dir/.config"
+cp -f "$canonical/metadata/managed-feeds" "$openwrt_dir/.managed-feeds"
+cp -a "$canonical/metadata/sdk-metadata/." "$metadata_dir/"
+
+found="$(($(wc -l < "$results_dir/BUILD-RESULTS.tsv") - 1))"
+matched="$(wc -l < "$results_dir/EXPECTED.txt")"
+success="$(wc -l < "$results_dir/SUCCESS.txt")"
+failed="$(wc -l < "$results_dir/FAILED.txt")"
+skipped="$(wc -l < "$results_dir/SKIPPED.txt")"
+{
+	echo "shard_count=$expected_shards"
+	echo "found=$found"
+	echo "matched=$matched"
+	echo "success=$success"
+	echo "failed=$failed"
+	echo "skipped=$skipped"
+} > "$results_dir/SUMMARY.txt"
+
+printf 'shards=%s found=%s matched=%s success=%s failed=%s skipped=%s ipk=%s\n' \
+	"$expected_shards" "$found" "$matched" "$success" "$failed" "$skipped" "${#ipk_hashes[@]}"

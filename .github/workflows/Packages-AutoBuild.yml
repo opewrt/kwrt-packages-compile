@@ -60,16 +60,24 @@ env:
   CCACHE_DIR: /mnt/openwrt/ccache
 
 jobs:
-  build:
+  prepare:
     if: github.repository_owner == 'opewrt'
     runs-on: ubuntu-latest
-    name: Build packages
+    outputs:
+      target: ${{ steps.inputs.outputs.target }}
+      packages: ${{ steps.inputs.outputs.packages }}
+      sdk_repository: ${{ steps.inputs.outputs.sdk_repository }}
+      sdk_tag: ${{ steps.inputs.outputs.sdk_tag }}
+      sdk_asset: ${{ steps.inputs.outputs.sdk_asset }}
+      main_commit: ${{ steps.inputs.outputs.main_commit }}
+      release: ${{ steps.inputs.outputs.release }}
+      nocache: ${{ steps.inputs.outputs.nocache }}
+      upload_artifact: ${{ steps.settings.outputs.upload_artifact }}
+      upload_release: ${{ steps.settings.outputs.upload_release }}
 
     steps:
     - name: Checkout
       uses: actions/checkout@v4.3.0
-      with:
-        fetch-depth: 0
 
     - name: Normalize build inputs
       id: inputs
@@ -124,25 +132,42 @@ jobs:
           echo "release=$release"
           echo "nocache=$nocache"
         } >> "$GITHUB_OUTPUT"
-        {
-          echo "TARGET=$target"
-          echo "PACKAGE_FILTER=$packages"
-          echo "SDK_REPOSITORY=$sdk_repository"
-          echo "REQUESTED_SDK_TAG=${EVENT_SDK_TAG:-}"
-          echo "REQUESTED_SDK_ASSET=${EVENT_SDK_ASSET:-}"
-          echo "REQUESTED_MAIN_COMMIT=${EVENT_MAIN_COMMIT:-}"
-          echo "CREATE_RELEASE=$release"
-          echo "NOCACHE=$nocache"
-        } >> "$GITHUB_ENV"
 
     - name: Load package build settings
+      id: settings
       run: |
         set -e
         source "$GITHUB_WORKSPACE/devices/common/settings.ini"
         {
-          echo "UPLOAD_PACKAGES_FOR_ARTIFACT=$UPLOAD_PACKAGES_FOR_ARTIFACT"
-          echo "UPLOAD_PACKAGES_FOR_RELEASE=$UPLOAD_PACKAGES_FOR_RELEASE"
-        } >> "$GITHUB_ENV"
+          echo "upload_artifact=$UPLOAD_PACKAGES_FOR_ARTIFACT"
+          echo "upload_release=$UPLOAD_PACKAGES_FOR_RELEASE"
+        } >> "$GITHUB_OUTPUT"
+
+  build:
+    needs: prepare
+    runs-on: ubuntu-latest
+    timeout-minutes: 330
+    name: Build packages shard ${{ matrix.shard }}
+    strategy:
+      fail-fast: false
+      matrix:
+        shard: [0, 1, 2, 3, 4, 5, 6, 7]
+    env:
+      TARGET: ${{ needs.prepare.outputs.target }}
+      PACKAGE_FILTER: ${{ needs.prepare.outputs.packages }}
+      SDK_REPOSITORY: ${{ needs.prepare.outputs.sdk_repository }}
+      REQUESTED_SDK_TAG: ${{ needs.prepare.outputs.sdk_tag }}
+      REQUESTED_SDK_ASSET: ${{ needs.prepare.outputs.sdk_asset }}
+      REQUESTED_MAIN_COMMIT: ${{ needs.prepare.outputs.main_commit }}
+      NOCACHE: ${{ needs.prepare.outputs.nocache }}
+      SHARD_INDEX: ${{ matrix.shard }}
+      SHARD_COUNT: '8'
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4.3.0
+      with:
+        fetch-depth: 0
 
     - name: Check private feeds token
       id: private-feeds
@@ -161,7 +186,7 @@ jobs:
       uses: actions/checkout@v4.3.0
       with:
         repository: opewrt/kwrt-main
-        ref: ${{ steps.inputs.outputs.main_commit || 'main' }}
+        ref: ${{ needs.prepare.outputs.main_commit || 'main' }}
         token: ${{ secrets.REPO_TOKEN }}
         path: private-workspace
         fetch-depth: 1
@@ -239,29 +264,31 @@ jobs:
 
     - name: Cache Kwrt SDK
       uses: actions/cache@v4
-      if: steps.inputs.outputs.nocache != 'true'
+      if: env.NOCACHE != 'true'
       with:
         path: .cache/sdk
         key: kwrt-sdk-${{ runner.os }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}
 
     - name: Cache package downloads
       uses: actions/cache@v4
-      if: steps.inputs.outputs.nocache != 'true'
+      if: env.NOCACHE != 'true'
       with:
         path: /mnt/openwrt/dl
-        key: kwrt-packages-dl-${{ runner.os }}-${{ steps.inputs.outputs.target }}-${{ steps.sdk.outputs.release_tag }}-${{ github.sha }}
+        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-shard-${{ matrix.shard }}-${{ github.sha }}
         restore-keys: |
-          kwrt-packages-dl-${{ runner.os }}-${{ steps.inputs.outputs.target }}-${{ steps.sdk.outputs.release_tag }}-
-          kwrt-packages-dl-${{ runner.os }}-${{ steps.inputs.outputs.target }}-
+          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-shard-${{ matrix.shard }}-
+          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-
+          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-
 
     - name: Cache compiler output
       uses: actions/cache@v4
-      if: steps.inputs.outputs.nocache != 'true'
+      if: env.NOCACHE != 'true'
       with:
         path: /mnt/openwrt/ccache
-        key: kwrt-packages-ccache-${{ runner.os }}-${{ steps.inputs.outputs.target }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}-${{ github.sha }}
+        key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}-shard-${{ matrix.shard }}-${{ github.sha }}
         restore-keys: |
-          kwrt-packages-ccache-${{ runner.os }}-${{ steps.inputs.outputs.target }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}-
+          kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}-shard-${{ matrix.shard }}-
+          kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}-
 
     - name: Download and verify Kwrt SDK
       run: |
@@ -286,6 +313,7 @@ jobs:
         test -n "$sdk_root"
         cp -a "$sdk_root/." openwrt/
         rm -rf sdk-extract openwrt/dl openwrt/.ccache
+        find openwrt/bin -type f -name '*.ipk' -delete 2>/dev/null || true
         ln -s /mnt/openwrt/dl openwrt/dl
         ln -s /mnt/openwrt/ccache openwrt/.ccache
         cp -a devices openwrt/
@@ -332,27 +360,202 @@ jobs:
         fi
         make defconfig
 
-    - name: Compile managed feeds
+    - name: Compile managed feeds shard
       id: compile
       continue-on-error: true
-      env:
-        PACKAGE_FILTER: ${{ steps.inputs.outputs.packages }}
       run: |
         cd openwrt
         /bin/bash devices/common/compile-managed-feeds.sh
 
-    - name: Generate package indexes
-      id: index
+    - name: Prepare shard artifact
       if: steps.compile.outcome == 'success' || steps.compile.outcome == 'failure'
-      continue-on-error: true
+      run: |
+        set -euo pipefail
+        artifact="$GITHUB_WORKSPACE/package-shard"
+        mkdir -p "$artifact/ipk" "$artifact/metadata/sdk-metadata"
+        if [ -d "$GITHUB_WORKSPACE/openwrt/bin" ]; then
+          rsync -a --prune-empty-dirs --include='*/' --include='*.ipk' --exclude='*' \
+            "$GITHUB_WORKSPACE/openwrt/bin/" "$artifact/ipk/bin/"
+        fi
+        cp -a "$GITHUB_WORKSPACE/openwrt/build-results" "$artifact/"
+        if [ -d "$GITHUB_WORKSPACE/openwrt/build-logs" ]; then
+          cp -a "$GITHUB_WORKSPACE/openwrt/build-logs" "$artifact/"
+        fi
+        cp -f "$GITHUB_WORKSPACE/openwrt/.config" "$artifact/metadata/openwrt.config"
+        cp -f "$GITHUB_WORKSPACE/openwrt/.managed-feeds" "$artifact/metadata/managed-feeds"
+        printf '%s\n' "$PRIVATE_WORKSPACE_COMMIT" > "$artifact/metadata/private-workspace-commit"
+        cp -a "$GITHUB_WORKSPACE/sdk-metadata/." "$artifact/metadata/sdk-metadata/"
+        {
+          echo "shard_index=$SHARD_INDEX"
+          echo "shard_count=$SHARD_COUNT"
+          echo "compile_outcome=${{ steps.compile.outcome }}"
+        } > "$artifact/SHARD.txt"
+
+    - name: Upload package shard artifact
+      uses: actions/upload-artifact@v4.6.2
+      if: steps.compile.outcome == 'success' || steps.compile.outcome == 'failure'
+      with:
+        name: package-shard-${{ steps.sdk.outputs.release_tag }}-${{ env.TARGET }}-${{ matrix.shard }}
+        path: package-shard
+        if-no-files-found: error
+        compression-level: 0
+
+    - name: Fail incomplete package shard
+      if: steps.compile.outcome != 'success'
+      run: |
+        echo "Managed package compilation failed in shard $SHARD_INDEX."
+        exit 1
+
+  merge-release:
+    needs: [prepare, build]
+    if: always() && needs.prepare.result == 'success' && github.repository_owner == 'opewrt'
+    runs-on: ubuntu-latest
+    name: Merge packages and release
+    env:
+      TARGET: ${{ needs.prepare.outputs.target }}
+      PACKAGE_FILTER: ${{ needs.prepare.outputs.packages }}
+      SDK_REPOSITORY: ${{ needs.prepare.outputs.sdk_repository }}
+      CREATE_RELEASE: ${{ needs.prepare.outputs.release }}
+      NOCACHE: ${{ needs.prepare.outputs.nocache }}
+      UPLOAD_PACKAGES_FOR_ARTIFACT: ${{ needs.prepare.outputs.upload_artifact }}
+      UPLOAD_PACKAGES_FOR_RELEASE: ${{ needs.prepare.outputs.upload_release }}
+      SHARD_COUNT: '8'
+
+    steps:
+    - name: Checkout
+      uses: actions/checkout@v4.3.0
+      with:
+        fetch-depth: 0
+
+    - name: Download package shard artifacts
+      uses: actions/download-artifact@v4.3.0
+      with:
+        pattern: package-shard-*
+        path: package-shards
+
+    - name: Read shard build selection
+      id: selection
+      run: |
+        set -euo pipefail
+        sdk_refs="$(find "$GITHUB_WORKSPACE/package-shards" -path '*/metadata/sdk-metadata/SDK.refs' -print -quit)"
+        test -n "$sdk_refs"
+        sdk_tag="$(sed -n 's/^sdk_release_tag=//p' "$sdk_refs")"
+        sdk_asset="$(sed -n 's/^sdk_asset=//p' "$sdk_refs")"
+        main_commit="$(<"${sdk_refs%/sdk-metadata/SDK.refs}/private-workspace-commit")"
+        test -n "$sdk_tag"
+        test -n "$sdk_asset"
+        test -n "$main_commit"
+        {
+          echo "MERGE_SDK_TAG=$sdk_tag"
+          echo "MERGE_SDK_ASSET=$sdk_asset"
+        } >> "$GITHUB_ENV"
+        echo "main_commit=$main_commit" >> "$GITHUB_OUTPUT"
+
+    - name: Check private feeds token
+      id: private-feeds
+      env:
+        REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
+      run: |
+        if [ -n "$REPO_TOKEN" ]; then
+          echo "enabled=true" >> "$GITHUB_OUTPUT"
+        else
+          echo "enabled=false" >> "$GITHUB_OUTPUT"
+          echo "REPO_TOKEN is not configured; package Release will be skipped."
+        fi
+
+    - name: Checkout private feeds workspace metadata
+      if: steps.private-feeds.outputs.enabled == 'true'
+      uses: actions/checkout@v4.3.0
+      with:
+        repository: opewrt/kwrt-main
+        ref: ${{ steps.selection.outputs.main_commit }}
+        token: ${{ secrets.REPO_TOKEN }}
+        path: private-workspace
+        fetch-depth: 1
+        persist-credentials: false
+
+    - name: Record private workspace commit
+      run: |
+        if [ -d "$GITHUB_WORKSPACE/private-workspace/.git" ]; then
+          main_commit="$(git -C "$GITHUB_WORKSPACE/private-workspace" rev-parse HEAD)"
+        else
+          main_commit="none"
+        fi
+        echo "PRIVATE_WORKSPACE_COMMIT=$main_commit" >> "$GITHUB_ENV"
+
+    - name: Initialize merge environment
+      env:
+        DEBIAN_FRONTEND: noninteractive
+      run: |
+        sudo -E apt-get -qq update
+        sudo -E apt-get -qq install jq zstd
+        sudo -E apt-get -qq clean
+        sudo timedatectl set-timezone "$TZ"
+
+    - name: Resolve Kwrt SDK release
+      id: sdk
+      run: |
+        "$GITHUB_WORKSPACE/devices/common/resolve-kwrt-sdk.sh" \
+          "$SDK_REPOSITORY" \
+          "$TARGET" \
+          "$MERGE_SDK_TAG" \
+          "$MERGE_SDK_ASSET" \
+          "$GITHUB_WORKSPACE/sdk-metadata-resolved"
+
+    - name: Verify resolved SDK metadata
+      run: |
+        set -euo pipefail
+        shard_metadata="$(find "$GITHUB_WORKSPACE/package-shards" -path '*/metadata/sdk-metadata' -type d -print -quit)"
+        test -n "$shard_metadata"
+        for metadata_file in MANIFEST.refs ASSETS.sha256sums SDK.refs; do
+          cmp "$shard_metadata/$metadata_file" "$GITHUB_WORKSPACE/sdk-metadata-resolved/$metadata_file"
+        done
+
+    - name: Cache Kwrt SDK
+      uses: actions/cache@v4
+      if: env.NOCACHE != 'true'
+      with:
+        path: .cache/sdk
+        key: kwrt-sdk-${{ runner.os }}-${{ steps.sdk.outputs.release_tag }}-${{ steps.sdk.outputs.sdk_sha256 }}
+
+    - name: Download and verify Kwrt SDK
+      run: |
+        set -euo pipefail
+        sdk_dir="$GITHUB_WORKSPACE/.cache/sdk/$SDK_RELEASE_TAG"
+        sdk_archive="$sdk_dir/$SDK_ASSET_NAME"
+        mkdir -p "$sdk_dir"
+        if [ ! -f "$sdk_archive" ]; then
+          curl -fL --retry 5 --retry-delay 5 "$SDK_DOWNLOAD_URL" -o "$sdk_archive"
+        fi
+        printf '%s  %s\n' "$SDK_SHA256" "$SDK_ASSET_NAME" |
+          (cd "$sdk_dir" && sha256sum -c -)
+        echo "SDK_ARCHIVE=$sdk_archive" >> "$GITHUB_ENV"
+
+    - name: Extract Kwrt SDK
+      run: |
+        set -euo pipefail
+        rm -rf openwrt sdk-extract
+        mkdir -p openwrt sdk-extract
+        tar --zstd -xf "$SDK_ARCHIVE" -C sdk-extract
+        sdk_root="$(find sdk-extract -mindepth 1 -maxdepth 1 -type d -name '*sdk*' -print -quit)"
+        test -n "$sdk_root"
+        cp -a "$sdk_root/." openwrt/
+        rm -rf sdk-extract
+        find openwrt/bin -type f -name '*.ipk' -delete 2>/dev/null || true
+
+    - name: Merge and verify package shards
+      run: |
+        /bin/bash "$GITHUB_WORKSPACE/devices/common/merge-package-shards.sh" \
+          "$GITHUB_WORKSPACE/package-shards" \
+          "$GITHUB_WORKSPACE/openwrt" \
+          "$GITHUB_WORKSPACE/sdk-metadata"
+
+    - name: Generate package indexes
       run: |
         cd openwrt
         make package/index
 
     - name: Prepare package release
-      if: steps.compile.outcome == 'success' || steps.compile.outcome == 'failure'
-      env:
-        REQUIRE_IPK: ${{ steps.compile.outcome == 'success' }}
       run: |
         "$GITHUB_WORKSPACE/devices/common/prepare-package-release.sh" \
           "$GITHUB_WORKSPACE/openwrt" \
@@ -362,19 +565,19 @@ jobs:
 
     - name: Upload package build artifact
       uses: actions/upload-artifact@v4.6.2
-      if: (steps.compile.outcome == 'success' || steps.compile.outcome == 'failure') && env.UPLOAD_PACKAGES_FOR_ARTIFACT == 'true'
+      if: env.UPLOAD_PACKAGES_FOR_ARTIFACT == 'true'
       with:
-        name: packages-${{ steps.sdk.outputs.release_tag }}-${{ steps.inputs.outputs.target }}
+        name: packages-${{ steps.sdk.outputs.release_tag }}-${{ env.TARGET }}
         path: package-release
         if-no-files-found: error
         compression-level: 0
 
     - name: Report skipped package release
-      if: steps.compile.outcome == 'success' && steps.index.outcome == 'success' && steps.inputs.outputs.release == 'true' && env.UPLOAD_PACKAGES_FOR_RELEASE == 'true' && steps.private-feeds.outputs.enabled != 'true'
+      if: env.CREATE_RELEASE == 'true' && env.UPLOAD_PACKAGES_FOR_RELEASE == 'true' && steps.private-feeds.outputs.enabled != 'true'
       run: echo "REPO_TOKEN is not configured; package artifacts are available but the GitHub Release is skipped."
 
     - name: Create package release body
-      if: steps.compile.outcome == 'success' && steps.index.outcome == 'success' && steps.inputs.outputs.release == 'true' && env.UPLOAD_PACKAGES_FOR_RELEASE == 'true' && steps.private-feeds.outputs.enabled == 'true'
+      if: env.CREATE_RELEASE == 'true' && env.UPLOAD_PACKAGES_FOR_RELEASE == 'true' && steps.private-feeds.outputs.enabled == 'true'
       run: |
         {
           echo "Packages built with Kwrt SDK"
@@ -389,7 +592,7 @@ jobs:
 
     - name: Upload packages for release
       uses: softprops/action-gh-release@v2.6.2
-      if: steps.compile.outcome == 'success' && steps.index.outcome == 'success' && steps.inputs.outputs.release == 'true' && env.UPLOAD_PACKAGES_FOR_RELEASE == 'true' && steps.private-feeds.outputs.enabled == 'true'
+      if: env.CREATE_RELEASE == 'true' && env.UPLOAD_PACKAGES_FOR_RELEASE == 'true' && steps.private-feeds.outputs.enabled == 'true'
       env:
         GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
       with:
@@ -397,9 +600,3 @@ jobs:
         name: Packages for ${{ steps.sdk.outputs.release_tag }}
         tag_name: packages-${{ steps.sdk.outputs.release_tag }}
         body_path: release.txt
-
-    - name: Fail incomplete package build
-      if: steps.compile.outcome != 'success' || steps.index.outcome != 'success'
-      run: |
-        echo "Managed package compilation or package index generation failed."
-        exit 1

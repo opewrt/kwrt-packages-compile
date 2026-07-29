@@ -8,16 +8,23 @@ package_filter="${PACKAGE_FILTER:-.*}"
 results_dir="${BUILD_RESULTS_DIR:-$PWD/build-results}"
 logs_dir="${BUILD_LOGS_DIR:-$PWD/build-logs}"
 jobs="${JOBS:-$(($(nproc) + 1))}"
+shard_index="${SHARD_INDEX:-0}"
+shard_count="${SHARD_COUNT:-1}"
 
 mkdir -p "$results_dir" "$logs_dir"
 results_file="$results_dir/BUILD-RESULTS.tsv"
 printf 'feed\tpackage\tstatus\tlog\n' > "$results_file"
+: > "$results_dir/EXPECTED.txt"
 : > "$results_dir/SUCCESS.txt"
 : > "$results_dir/FAILED.txt"
 : > "$results_dir/SKIPPED.txt"
 
 if [ ! -f "$managed_feeds_file" ]; then
 	echo "Managed feeds list is missing: $managed_feeds_file" >&2
+	exit 1
+fi
+if ! [[ "$shard_count" =~ ^[1-9][0-9]*$ ]] || ! [[ "$shard_index" =~ ^[0-9]+$ ]] || [ "$shard_index" -ge "$shard_count" ]; then
+	echo "Invalid shard selection: index=$shard_index count=$shard_count" >&2
 	exit 1
 fi
 
@@ -38,16 +45,16 @@ while read -r feed_name; do
 	[ -n "$feed_name" ] || continue
 	if [ ! -d "feeds/$feed_name" ]; then
 		echo "Managed feed directory is missing: feeds/$feed_name" >&2
-		failed=$((failed + 1))
-		printf '%s\t%s\tfailed\t%s\n' "$feed_name" '(feed)' '-' >> "$results_file"
-		printf '%s/%s\n' "$feed_name" '(feed)' >> "$results_dir/FAILED.txt"
-		continue
+		exit 1
 	fi
 	for makefile in "feeds/$feed_name"/*/Makefile; do
-		found=$((found + 1))
 		package_dir="${makefile%/Makefile}"
 		package_name="${package_dir##*/}"
 		package_ref="$feed_name/$package_name"
+		package_hash="$(printf '%s' "$package_ref" | sha256sum)"
+		package_shard=$((16#${package_hash:0:8} % shard_count))
+		[ "$package_shard" -eq "$shard_index" ] || continue
+		found=$((found + 1))
 		if ! printf '%s\n' "$package_name" | grep -Eq "$package_filter"; then
 			skipped=$((skipped + 1))
 			printf '%s\t%s\tskipped\t%s\n' "$feed_name" "$package_name" '-' >> "$results_file"
@@ -55,6 +62,7 @@ while read -r feed_name; do
 			continue
 		fi
 		matched=$((matched + 1))
+		printf '%s\n' "$package_ref" >> "$results_dir/EXPECTED.txt"
 
 		echo "compile $package_ref"
 		target="package/feeds/$feed_name/$package_name/compile"
@@ -80,16 +88,9 @@ while read -r feed_name; do
 	done
 done < "$managed_feeds_file"
 
-if [ "$found" -eq 0 ]; then
-	echo "No managed source packages were found" >&2
-	exit 1
-fi
-if [ "$matched" -eq 0 ]; then
-	echo "Package regex matched no managed source packages: $package_filter" >&2
-	exit 1
-fi
-
 {
+	echo "shard_index=$shard_index"
+	echo "shard_count=$shard_count"
 	echo "found=$found"
 	echo "matched=$matched"
 	echo "success=$success"
@@ -97,5 +98,6 @@ fi
 	echo "skipped=$skipped"
 } > "$results_dir/SUMMARY.txt"
 
-printf 'found=%s matched=%s success=%s failed=%s skipped=%s\n' "$found" "$matched" "$success" "$failed" "$skipped"
+printf 'shard=%s/%s found=%s matched=%s success=%s failed=%s skipped=%s\n' \
+	"$shard_index" "$shard_count" "$found" "$matched" "$success" "$failed" "$skipped"
 [ "$failed" -eq 0 ]

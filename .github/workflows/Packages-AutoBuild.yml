@@ -306,9 +306,12 @@ jobs:
         cd "$GITHUB_WORKSPACE/openwrt"
         mkdir -p build-plan
         printdb_status=0
-        make printdb > tmp/.make-printdb 2> build-plan/make-printdb.stderr || printdb_status=$?
-        if [ "$printdb_status" -ne 0 ]; then
-          echo "make printdb failed with status $printdb_status" >&2
+        make OPENWRT_BUILD=1 -rR -qp world DUMP_TARGET_DB=1 \
+          > tmp/.make-printdb 2> build-plan/make-printdb.stderr || printdb_status=$?
+        if [ "$printdb_status" -gt 1 ]; then
+          echo "make dependency database failed with status $printdb_status" >&2
+          cat build-plan/make-printdb.stderr >&2
+          tail -n 200 tmp/.make-printdb >&2
           exit "$printdb_status"
         fi
         python3 devices/common/plan-package-build.py \

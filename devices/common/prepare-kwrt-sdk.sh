@@ -65,4 +65,5 @@ if [ -f "devices/$target/.config" ]; then
 	printf '\n' >> .config
 	cat "devices/$target/.config" >> .config
 fi
+rm -f tmp/.packageinfo tmp/.config-package.in tmp/info/.packageinfo-feeds_base_mac80211
 make defconfig

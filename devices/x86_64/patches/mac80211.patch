@@ -1,0 +1,13 @@
+--- a/feeds/base/package/kernel/mac80211/Makefile
++++ b/feeds/base/package/kernel/mac80211/Makefile
+@@ -94,6 +94,10 @@ include marvell.mk
+ include ralink.mk
+ include realtek.mk
+
++PKG_DRIVERS := $(filter-out \
++	b43 brcmsmac qcom-qmi-helpers \
++	rt2800-mmio rt2800-pci rt61-pci rt73-usb,$(PKG_DRIVERS))
++
+ PKG_CONFIG_DEPENDS += \
+ 	$(patsubst %,CONFIG_PACKAGE_kmod-%,$(PKG_DRIVERS))
+

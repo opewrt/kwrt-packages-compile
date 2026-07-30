@@ -1,11 +1,10 @@
 #!/usr/bin/env python3
-"""Plan dependency-aware staged builds from OpenWrt package metadata."""
+"""Plan a dependency-ordered build queue from OpenWrt package metadata."""
 
 from __future__ import annotations
 
 import argparse
 import json
-import math
 import re
 from collections import defaultdict
 from pathlib import Path
@@ -115,7 +114,7 @@ def tarjan(nodes: set[str], graph: dict[str, set[str]]) -> tuple[list[list[str]]
     return components, component_of
 
 
-def dependency_order(nodes: set[str], graph: dict[str, set[str]]) -> list[str]:
+def dependency_units(nodes: set[str], graph: dict[str, set[str]]) -> list[list[str]]:
     components, component_of = tarjan(nodes, graph)
     component_dependencies: dict[int, set[int]] = defaultdict(set)
     for node in nodes:
@@ -138,7 +137,7 @@ def dependency_order(nodes: set[str], graph: dict[str, set[str]]) -> list[str]:
 
     for component in range(len(components)):
         visit(component)
-    return [node for component in ordered_components for node in components[component]]
+    return [components[component] for component in ordered_components]
 
 
 def reachable(roots: set[str], graph: dict[str, set[str]]) -> set[str]:
@@ -158,13 +157,6 @@ def managed_ref(target: str) -> str | None:
     return f"{match.group(1)}/{match.group(2)}" if match else None
 
 
-def write_rows(path: Path, rows: list[tuple[str, str, int, int]]) -> None:
-    path.write_text(
-        "".join(f"{ref}\t{target}\t{report}\t{build}\n" for ref, target, report, build in rows),
-        encoding="utf-8",
-    )
-
-
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--packageinfo", type=Path, required=True)
@@ -172,12 +164,8 @@ def main() -> int:
     parser.add_argument("--managed-feeds", type=Path, required=True)
     parser.add_argument("--package-filter", default=".*")
     parser.add_argument("--output", type=Path, required=True)
-    parser.add_argument("--max-bundles", type=int, default=8)
-    parser.add_argument("--bundle-size", type=int, default=12)
     args = parser.parse_args()
 
-    if args.max_bundles < 1 or args.bundle_size < 1:
-        parser.error("bundle limits must be positive")
     try:
         package_filter = re.compile(args.package_filter)
     except re.error as error:
@@ -196,71 +184,67 @@ def main() -> int:
     if not selected:
         raise SystemExit("Package regex matched no managed source packages")
 
-    selected_components, selected_component_of = tarjan(selected, graph)
-    selected_consumers: dict[int, set[int]] = defaultdict(set)
-    for consumer in selected:
-        consumer_component = selected_component_of[consumer]
-        for dependency in graph.get(consumer, set()) & selected:
-            dependency_component = selected_component_of[dependency]
+    closure = reachable(selected, graph)
+    closure_components, closure_component_of = tarjan(closure, graph)
+    closure_consumers: dict[int, set[int]] = defaultdict(set)
+    for consumer in closure:
+        consumer_component = closure_component_of[consumer]
+        for dependency in graph.get(consumer, set()) & closure:
+            dependency_component = closure_component_of[dependency]
             if consumer_component != dependency_component:
-                selected_consumers[dependency_component].add(consumer_component)
+                closure_consumers[dependency_component].add(consumer_component)
 
     leaf_components = {
         component_id
-        for component_id, members in enumerate(selected_components)
-        if len(members) == 1 and not selected_consumers[component_id]
+        for component_id, members in enumerate(closure_components)
+        if len(members) == 1
+        and members[0] in selected
+        and not closure_consumers[component_id]
     }
-    leaf_targets = {selected_components[component_id][0] for component_id in leaf_components}
-    closure = reachable(selected, graph)
+    leaf_targets = {closure_components[component_id][0] for component_id in leaf_components}
     foundation_targets = closure - leaf_targets
-    foundation_consumers: dict[str, set[str]] = defaultdict(set)
-    for consumer in foundation_targets:
-        for dependency in graph.get(consumer, set()) & foundation_targets:
-            foundation_consumers[dependency].add(consumer)
-    foundation_roots = {
-        target for target in foundation_targets if not foundation_consumers[target]
-    }
-    foundation_order = dependency_order(foundation_targets, graph)
-    foundation_rows = [
-        (
-            managed.get(target, f"dependency/{target}"),
-            target,
-            int(target in selected),
-            int(target in foundation_roots),
-        )
-        for target in foundation_order
-    ]
+    foundation_units = dependency_units(foundation_targets, graph)
+    package_units = dependency_units(leaf_targets, graph)
 
-    leaf_order = dependency_order(leaf_targets, graph)
-    bundle_count = min(args.max_bundles, max(1, math.ceil(len(leaf_order) / args.bundle_size)))
-    bundles: list[list[str]] = [[] for _ in range(bundle_count)]
-    for index, target in enumerate(leaf_order):
-        bundles[index % bundle_count].append(target)
+    queue_rows: list[tuple[str, str, str, str, int]] = []
+    unit_index = 0
+    for phase, units in (("foundation", foundation_units), ("packages", package_units)):
+        for unit in units:
+            unit_id = f"unit-{unit_index:04d}"
+            unit_index += 1
+            for target in unit:
+                queue_rows.append(
+                    (
+                        unit_id,
+                        phase,
+                        managed.get(target, f"dependency/{target}"),
+                        target,
+                        int(target in selected),
+                    )
+                )
 
     args.output.mkdir(parents=True, exist_ok=True)
-    (args.output / "bundles").mkdir(exist_ok=True)
-    write_rows(args.output / "foundation.tsv", foundation_rows)
-    for index, bundle in enumerate(bundles):
-        write_rows(
-            args.output / "bundles" / f"bundle-{index:03d}.tsv",
-            [(managed[target], target, 1, 1) for target in bundle],
-        )
+    (args.output / "queue.tsv").write_text(
+        "".join(
+            f"{unit_id}\t{phase}\t{ref}\t{target}\t{report}\n"
+            for unit_id, phase, ref, target, report in queue_rows
+        ),
+        encoding="utf-8",
+    )
     (args.output / "SKIPPED.txt").write_text("".join(f"{ref}\n" for ref in skipped), encoding="utf-8")
 
-    matrix = {"include": [{"bundle": f"bundle-{index:03d}"} for index in range(bundle_count)]}
-    (args.output / "matrix.json").write_text(json.dumps(matrix, separators=(",", ":")) + "\n", encoding="utf-8")
     plan = {
         "managed": len(managed),
         "selected": len(selected),
         "skipped": len(skipped),
         "source_host_nodes": len(closure),
-        "sccs": len(selected_components),
-        "foundation_targets": len(foundation_rows),
-        "foundation_roots": len(foundation_roots),
-        "foundation_managed": sum(row[2] for row in foundation_rows),
-        "leaf_targets": len(leaf_targets),
-        "leaf_bundles": bundle_count,
-        "stage_count": bundle_count + 1,
+        "sccs": len(foundation_units) + len(package_units),
+        "foundation_targets": len(foundation_targets),
+        "foundation_units": len(foundation_units),
+        "package_targets": len(leaf_targets),
+        "package_units": len(package_units),
+        "queue_units": unit_index,
+        "stage_count": 1,
     }
     (args.output / "plan.json").write_text(json.dumps(plan, indent=2, sort_keys=True) + "\n", encoding="utf-8")
     print(json.dumps(plan, sort_keys=True))

@@ -44,7 +44,7 @@ on:
         type: boolean
         default: true
       nocache:
-        description: 'disable SDK, download and ccache caches'
+        description: 'disable SDK, download, compiler and checkpoint caches'
         required: false
         type: boolean
         default: false
@@ -147,10 +147,10 @@ jobs:
     needs: prepare
     runs-on: ubuntu-latest
     timeout-minutes: 120
-    name: Plan staged package build
+    name: Plan sequential package build
     outputs:
-      matrix: ${{ steps.plan.outputs.matrix }}
       stage_count: ${{ steps.plan.outputs.stage_count }}
+      build_identity: ${{ steps.plan.outputs.build_identity }}
       sdk_tag: ${{ steps.sdk.outputs.release_tag }}
       sdk_sha256: ${{ steps.sdk.outputs.sdk_sha256 }}
     env:
@@ -319,11 +319,17 @@ jobs:
           --managed-feeds .managed-feeds \
           --package-filter "$PACKAGE_FILTER" \
           --output build-plan
-        matrix="$(jq -c . build-plan/matrix.json)"
         stage_count="$(jq -r .stage_count build-plan/plan.json)"
+        build_identity="$({
+          printf 'compiler-commit=%s\n' "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
+          printf 'private-workspace=%s\n' "$PRIVATE_WORKSPACE_COMMIT"
+          sha256sum .config .managed-feeds build-plan/queue.tsv
+          find "$GITHUB_WORKSPACE/sdk-metadata" -type f -print0 | sort -z | xargs -0 sha256sum
+        } | sha256sum | cut -d ' ' -f 1)"
+        printf '%s\n' "$build_identity" > build-plan/build-identity
         {
-          echo "matrix=$matrix"
           echo "stage_count=$stage_count"
+          echo "build_identity=$build_identity"
         } >> "$GITHUB_OUTPUT"
 
     - name: Save planner download cache
@@ -355,21 +361,25 @@ jobs:
         if-no-files-found: error
         compression-level: 0
 
-  foundation:
+  sequential-build:
     needs: [prepare, plan]
     runs-on: ubuntu-latest
-    timeout-minutes: 330
-    name: Build shared foundation
+    timeout-minutes: 355
+    name: Build dependency queue
     env:
       TARGET: ${{ needs.prepare.outputs.target }}
       NOCACHE: ${{ needs.prepare.outputs.nocache }}
       SDK_TAG: ${{ needs.plan.outputs.sdk_tag }}
       SDK_SHA256: ${{ needs.plan.outputs.sdk_sha256 }}
-      STAGE_NAME: foundation
+      BUILD_IDENTITY: ${{ needs.plan.outputs.build_identity }}
+      STAGE_NAME: sequential
 
     steps:
     - name: Checkout
       uses: actions/checkout@v4.3.0
+
+    - name: Record queue deadline origin
+      run: echo "QUEUE_START_EPOCH=$(date +%s)" >> "$GITHUB_ENV"
 
     - name: Free disk space
       uses: coder-xiaomo/free-disk-space@1.4.0
@@ -405,8 +415,9 @@ jobs:
       if: env.NOCACHE != 'true'
       with:
         path: /mnt/openwrt/dl
-        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-foundation-${{ github.run_id }}-${{ github.run_attempt }}
+        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
+          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-
           kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-
           kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-
 
@@ -415,9 +426,9 @@ jobs:
       if: env.NOCACHE != 'true'
       with:
         path: /mnt/openwrt/ccache
-        key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-foundation-${{ github.run_id }}-${{ github.run_attempt }}
+        key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
-          kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-
+          kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-
 
     - name: Restore prepared SDK
       run: |
@@ -431,227 +442,115 @@ jobs:
         ln -s /mnt/openwrt/dl openwrt/dl
         ln -s /mnt/openwrt/ccache openwrt/.ccache
 
-    - name: Compile shared foundation
+    - name: Restore queue checkpoint
+      uses: actions/cache/restore@v4
+      if: env.NOCACHE != 'true'
+      with:
+        path: |
+          openwrt/staging_dir
+          openwrt/bin
+          openwrt/build-state
+        key: kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-
+
+    - name: Compile dependency queue
       id: compile
       continue-on-error: true
       run: |
+        set -uo pipefail
+        status=0
         cd openwrt
         BUILD_PLAN_DIR="$GITHUB_WORKSPACE/package-plan/build-plan" \
-          /bin/bash devices/common/compile-package-stage.sh \
-          "$GITHUB_WORKSPACE/package-plan/build-plan/foundation.tsv" "$STAGE_NAME" foundation
-
-    - name: Save foundation download cache
-      uses: actions/cache/save@v4
-      if: always() && env.NOCACHE != 'true'
-      with:
-        path: /mnt/openwrt/dl
-        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-foundation-${{ github.run_id }}-${{ github.run_attempt }}
-
-    - name: Save foundation compiler cache
-      uses: actions/cache/save@v4
-      if: always() && env.NOCACHE != 'true'
-      with:
-        path: /mnt/openwrt/ccache
-        key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-foundation-${{ github.run_id }}-${{ github.run_attempt }}
-
-    - name: Prepare foundation state and result
-      if: always() && steps.compile.outcome != 'skipped'
-      run: |
-        set -euo pipefail
-        artifact="$GITHUB_WORKSPACE/package-stage"
-        mkdir -p "$artifact/ipk" "$artifact/metadata/sdk-metadata" "$GITHUB_WORKSPACE/foundation-state"
-        rsync -a --prune-empty-dirs --include='*/' --include='*.ipk' --exclude='*' openwrt/bin/ "$artifact/ipk/bin/"
-        cp -a openwrt/build-results "$artifact/"
-        if [ -d openwrt/build-logs ]; then cp -a openwrt/build-logs "$artifact/"; fi
-        cp -f openwrt/.config "$artifact/metadata/openwrt.config"
-        cp -f openwrt/.managed-feeds "$artifact/metadata/managed-feeds"
-        cp -f package-plan/private-workspace-commit "$artifact/metadata/private-workspace-commit"
-        cp -a package-plan/sdk-metadata/. "$artifact/metadata/sdk-metadata/"
+          BUILD_STATE_DIR="$GITHUB_WORKSPACE/openwrt/build-state" \
+          /bin/bash devices/common/compile-package-queue.sh \
+          "$GITHUB_WORKSPACE/package-plan/build-plan/queue.tsv" || status=$?
+        queue_status="$(sed -n 's/^status=//p' build-state/QUEUE-STATE.txt 2>/dev/null || true)"
+        [ -n "$queue_status" ] || queue_status="failed"
         {
-          echo "stage_name=$STAGE_NAME"
-          echo "compile_outcome=${{ steps.compile.outcome }}"
-        } > "$artifact/STAGE.txt"
-        test -d openwrt/staging_dir
-        tar --zstd -cf "$GITHUB_WORKSPACE/foundation-state/foundation-state.tar.zst" \
-          -C openwrt staging_dir
+          echo "exit_code=$status"
+          echo "queue_status=$queue_status"
+        } >> "$GITHUB_OUTPUT"
+        exit "$status"
 
-    - name: Upload foundation result
-      uses: actions/upload-artifact@v4.6.2
+    - name: Quiesce checkpoint files
       if: always() && steps.compile.outcome != 'skipped'
-      with:
-        name: package-stage-foundation
-        path: package-stage
-        if-no-files-found: error
-        compression-level: 0
-
-    - name: Upload foundation state
-      uses: actions/upload-artifact@v4.6.2
-      if: always() && steps.compile.outcome != 'skipped'
-      with:
-        name: package-foundation-state-${{ github.run_id }}-${{ github.run_attempt }}
-        path: foundation-state
-        if-no-files-found: error
-        compression-level: 0
-
-    - name: Fail incomplete foundation
-      if: steps.compile.outcome != 'success'
-      run: |
-        echo "Shared foundation compilation failed after caches and logs were saved."
-        exit 1
-
-  leaf:
-    needs: [prepare, plan, foundation]
-    runs-on: ubuntu-latest
-    timeout-minutes: 330
-    name: Build leaf ${{ matrix.bundle }}
-    strategy:
-      fail-fast: false
-      matrix: ${{ fromJSON(needs.plan.outputs.matrix) }}
-    env:
-      TARGET: ${{ needs.prepare.outputs.target }}
-      NOCACHE: ${{ needs.prepare.outputs.nocache }}
-      SDK_TAG: ${{ needs.plan.outputs.sdk_tag }}
-      SDK_SHA256: ${{ needs.plan.outputs.sdk_sha256 }}
-      STAGE_NAME: ${{ matrix.bundle }}
-
-    steps:
-    - name: Checkout
-      uses: actions/checkout@v4.3.0
-
-    - name: Free disk space
-      uses: coder-xiaomo/free-disk-space@1.4.0
-      with:
-        tool-cache: false
-        android: true
-        dotnet: true
-        haskell: true
-        large-packages: true
-        docker-images: true
-        swap-storage: true
-
-    - name: Initialize environment
-      env:
-        DEBIAN_FRONTEND: noninteractive
-      run: |
-        sudo -E apt-get -qq update
-        sudo -E apt-get -qq install build-essential clang libncurses-dev zlib1g-dev gawk git \
-          gettext libssl-dev xsltproc rsync wget unzip curl zstd ccache \
-          llvm python3-pyelftools libpython3-dev aria2 jq qemu-utils rename \
-          libelf-dev libgmp3-dev libmpc-dev libfuse-dev bc
-        sudo -E apt-get -qq clean
-        sudo mkdir -p -m 777 /mnt/openwrt/dl /mnt/openwrt/ccache
-
-    - name: Download package build plan
-      uses: actions/download-artifact@v4.3.0
-      with:
-        name: package-build-plan-${{ github.run_id }}-${{ github.run_attempt }}
-        path: package-plan
-
-    - name: Download foundation state
-      uses: actions/download-artifact@v4.3.0
-      with:
-        name: package-foundation-state-${{ github.run_id }}-${{ github.run_attempt }}
-        path: foundation-state
-
-    - name: Restore package downloads
-      uses: actions/cache/restore@v4
-      if: env.NOCACHE != 'true'
-      with:
-        path: /mnt/openwrt/dl
-        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ matrix.bundle }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: |
-          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-foundation-${{ github.run_id }}-${{ github.run_attempt }}
-          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-
-          kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-
-
-    - name: Restore compiler cache
-      uses: actions/cache/restore@v4
-      if: env.NOCACHE != 'true'
-      with:
-        path: /mnt/openwrt/ccache
-        key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-${{ matrix.bundle }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: |
-          kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-foundation-${{ github.run_id }}-${{ github.run_attempt }}
-          kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-
-
-    - name: Restore prepared SDK and foundation
       run: |
         set -euo pipefail
-        mkdir -p openwrt
-        tar --zstd -xf package-plan/prepared-sdk.tar.zst -C openwrt
-        if [ -f package-plan/private-feeds.tar.zst ]; then
-          mkdir -p "$GITHUB_WORKSPACE/private-workspace"
-          tar --zstd -xf package-plan/private-feeds.tar.zst -C "$GITHUB_WORKSPACE/private-workspace"
-        fi
-        tar --zstd -xf foundation-state/foundation-state.tar.zst -C openwrt
-        find openwrt/bin -type f -name '*.ipk' -delete 2>/dev/null || true
-        ln -s /mnt/openwrt/dl openwrt/dl
-        ln -s /mnt/openwrt/ccache openwrt/.ccache
+        CCACHE_DIR=/mnt/openwrt/ccache ccache --cleanup || true
+        sync
+        test -f openwrt/build-state/QUEUE-STATE.txt
+        cat openwrt/build-state/QUEUE-STATE.txt
 
-    - name: Compile leaf bundle without dependencies
-      id: compile
-      continue-on-error: true
-      run: |
-        cd openwrt
-        BUILD_PLAN_DIR="$GITHUB_WORKSPACE/package-plan/build-plan" \
-          /bin/bash devices/common/compile-package-stage.sh \
-          "$GITHUB_WORKSPACE/package-plan/build-plan/bundles/$STAGE_NAME.tsv" "$STAGE_NAME" leaf
-
-    - name: Save leaf download cache
+    - name: Save queue checkpoint
       uses: actions/cache/save@v4
-      if: always() && env.NOCACHE != 'true'
+      if: always() && steps.compile.outcome != 'skipped' && env.NOCACHE != 'true'
       with:
-        path: /mnt/openwrt/dl
-        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ matrix.bundle }}-${{ github.run_id }}-${{ github.run_attempt }}
+        path: |
+          openwrt/staging_dir
+          openwrt/bin
+          openwrt/build-state
+        key: kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
 
-    - name: Save leaf compiler cache
+    - name: Save compiler cache
       uses: actions/cache/save@v4
-      if: always() && env.NOCACHE != 'true'
+      if: always() && steps.compile.outcome != 'skipped' && env.NOCACHE != 'true'
       with:
         path: /mnt/openwrt/ccache
-        key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.SDK_SHA256 }}-${{ matrix.bundle }}-${{ github.run_id }}-${{ github.run_attempt }}
+        key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
 
-    - name: Prepare leaf result
+    - name: Save package download cache
+      uses: actions/cache/save@v4
+      if: always() && steps.compile.outcome != 'skipped' && env.NOCACHE != 'true'
+      with:
+        path: /mnt/openwrt/dl
+        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: Prepare cumulative result
       if: always() && steps.compile.outcome != 'skipped'
       run: |
         set -euo pipefail
         artifact="$GITHUB_WORKSPACE/package-stage"
         mkdir -p "$artifact/ipk" "$artifact/metadata/sdk-metadata"
         rsync -a --prune-empty-dirs --include='*/' --include='*.ipk' --exclude='*' openwrt/bin/ "$artifact/ipk/bin/"
-        cp -a openwrt/build-results "$artifact/"
-        if [ -d openwrt/build-logs ]; then cp -a openwrt/build-logs "$artifact/"; fi
+        cp -a openwrt/build-state/build-results "$artifact/"
+        if [ -d openwrt/build-state/build-logs ]; then cp -a openwrt/build-state/build-logs "$artifact/"; fi
         cp -f openwrt/.config "$artifact/metadata/openwrt.config"
         cp -f openwrt/.managed-feeds "$artifact/metadata/managed-feeds"
         cp -f package-plan/private-workspace-commit "$artifact/metadata/private-workspace-commit"
         cp -a package-plan/sdk-metadata/. "$artifact/metadata/sdk-metadata/"
+        compile_outcome=failure
+        if [ "${{ steps.compile.outcome }}" = success ] && [ "${{ steps.compile.outputs.queue_status }}" = complete ]; then
+          compile_outcome=success
+        fi
         {
           echo "stage_name=$STAGE_NAME"
-          echo "compile_outcome=${{ steps.compile.outcome }}"
+          echo "compile_outcome=$compile_outcome"
         } > "$artifact/STAGE.txt"
 
-    - name: Upload leaf result and logs
+    - name: Upload cumulative result and logs
       uses: actions/upload-artifact@v4.6.2
       if: always() && steps.compile.outcome != 'skipped'
       with:
-        name: package-stage-${{ matrix.bundle }}
+        name: package-stage-sequential
         path: package-stage
         if-no-files-found: error
         compression-level: 0
 
-    - name: Fail incomplete leaf bundle
-      if: steps.compile.outcome != 'success'
+    - name: Fail paused or incomplete queue
+      if: steps.compile.outcome != 'success' || steps.compile.outputs.queue_status != 'complete'
       run: |
-        echo "Leaf bundle $STAGE_NAME failed after caches and logs were saved."
+        echo "Package queue status: ${{ steps.compile.outputs.queue_status }}"
+        echo "The checkpoint was saved; start the workflow manually to continue."
         exit 1
 
   merge-release:
-    needs: [prepare, plan, foundation, leaf]
+    needs: [prepare, plan, sequential-build]
     if: >-
       always() &&
       needs.prepare.result == 'success' &&
       needs.plan.result == 'success' &&
-      needs.foundation.result == 'success' &&
-      needs.leaf.result == 'success' &&
+      needs.sequential-build.result == 'success' &&
       github.repository_owner == 'opewrt'
     runs-on: ubuntu-latest
     name: Merge packages and release

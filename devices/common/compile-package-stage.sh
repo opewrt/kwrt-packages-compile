@@ -29,7 +29,9 @@ if [ "$mode" = "foundation" ] && [ -f "${BUILD_PLAN_DIR:-$PWD/build-plan}/SKIPPE
 	cp -f "${BUILD_PLAN_DIR:-$PWD/build-plan}/SKIPPED.txt" "$results_dir/SKIPPED.txt"
 fi
 
-mapfile -t build_targets < <(awk -F '\t' 'NF >= 2 && $2 != "" { print $2 }' "$plan_file")
+mapfile -t build_targets < <(
+	awk -F '\t' 'NF >= 4 && $2 != "" && $4 == "1" { print $2 }' "$plan_file"
+)
 bulk_status=0
 if [ "${#build_targets[@]}" -gt 0 ]; then
 	bulk_args=(-k -j"$jobs")
@@ -44,7 +46,7 @@ success=0
 failed=0
 dependency_failed=0
 found=0
-while IFS=$'\t' read -r package_ref target report; do
+while IFS=$'\t' read -r package_ref target report build; do
 	[ -n "$target" ] || continue
 	found=$((found + 1))
 	feed_name="${package_ref%%/*}"
@@ -60,6 +62,7 @@ while IFS=$'\t' read -r package_ref target report; do
 		fi
 		continue
 	fi
+	[ "$build" = "1" ] || continue
 
 	echo "diagnose $target ($stage_name)"
 	log_name="${stage_name}_${target//\//_}.log"
@@ -97,6 +100,20 @@ while IFS=$'\t' read -r package_ref target report; do
 		printf '%s\t%s\n' "$target" "build-logs/$log_name" >> "$results_dir/FAILED-DEPENDENCIES.txt"
 	fi
 done < "$plan_file"
+
+if [ "$bulk_status" -ne 0 ] && [ "$failed" -eq 0 ] && [ "$dependency_failed" -eq 0 ]; then
+	while IFS=$'\t' read -r package_ref target report build; do
+		[ "$report" = "1" ] || continue
+		if ! grep -Fqx -- "$package_ref" "$results_dir/SUCCESS.txt"; then
+			feed_name="${package_ref%%/*}"
+			package_name="${package_ref#*/}"
+			printf '%s\t%s\tsuccess-after-diagnosis\t%s\n' \
+				"$feed_name" "$package_name" '-' >> "$results_file"
+			printf '%s\n' "$package_ref" >> "$results_dir/SUCCESS.txt"
+		fi
+	done < "$plan_file"
+	success="$(awk 'NF { count++ } END { print count + 0 }' "$results_dir/SUCCESS.txt")"
+fi
 
 skipped="$(awk 'NF { count++ } END { print count + 0 }' "$results_dir/SKIPPED.txt")"
 {

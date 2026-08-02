@@ -22,7 +22,15 @@ openwrt_ref="$(get_ref openwrt)"
 packages_ref="$(get_ref feed.packages)"
 luci_ref="$(get_ref feed.luci)"
 routing_ref="$(get_ref feed.routing)"
-kiddin9_ref="$(get_ref feed.kiddin9)"
+if [ -n "${KIDDIN9_REF:-}" ]; then
+	if ! [[ "$KIDDIN9_REF" =~ ^[0-9a-f]{40}$ ]]; then
+		echo "Invalid KIDDIN9_REF: $KIDDIN9_REF" >&2
+		exit 1
+	fi
+	kiddin9_ref="$KIDDIN9_REF"
+else
+	kiddin9_ref="$(get_ref feed.kiddin9)"
+fi
 
 cat > feeds.conf <<EOF
 src-git-full base https://git.openwrt.org/openwrt/openwrt.git^${openwrt_ref}

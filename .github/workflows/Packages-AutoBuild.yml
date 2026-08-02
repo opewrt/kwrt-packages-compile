@@ -298,6 +298,16 @@ jobs:
           "$SDK_ARCHIVE" "$TARGET" "$GITHUB_WORKSPACE/sdk-metadata/MANIFEST.refs" \
           "$GITHUB_WORKSPACE" "$GITHUB_WORKSPACE/openwrt"
 
+    - name: Audit managed feed sources
+      run: |
+        cd "$GITHUB_WORKSPACE/openwrt"
+        python3 devices/common/source-policy-audit.py \
+          --root . \
+          --managed-feeds .managed-feeds \
+          --private-feeds .private-feeds \
+          --output . \
+          --mode report
+
     - name: Generate source and host build plan
       id: plan
       run: |
@@ -323,7 +333,7 @@ jobs:
         build_identity="$({
           printf 'compiler-commit=%s\n' "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
           printf 'private-workspace=%s\n' "$PRIVATE_WORKSPACE_COMMIT"
-          sha256sum .config .managed-feeds build-plan/queue.tsv
+          sha256sum .config .managed-feeds SOURCE-MANIFEST.tsv build-plan/queue.tsv
           find "$GITHUB_WORKSPACE/sdk-metadata" -type f -print0 | sort -z | xargs -0 sha256sum
         } | sha256sum | cut -d ' ' -f 1)"
         printf '%s\n' "$build_identity" > build-plan/build-identity
@@ -346,6 +356,11 @@ jobs:
         tar --zstd -cf "$GITHUB_WORKSPACE/package-plan/prepared-sdk.tar.zst" \
           --exclude='./dl' --exclude='./.ccache' -C "$GITHUB_WORKSPACE/openwrt" .
         cp -a "$GITHUB_WORKSPACE/openwrt/build-plan" "$GITHUB_WORKSPACE/package-plan/"
+        cp -f "$GITHUB_WORKSPACE/openwrt"/SOURCE-AUDIT.tsv \
+          "$GITHUB_WORKSPACE/openwrt"/SOURCE-AUDIT.json \
+          "$GITHUB_WORKSPACE/openwrt"/SOURCE-AUDIT-SUMMARY.txt \
+          "$GITHUB_WORKSPACE/openwrt"/SOURCE-MANIFEST.tsv \
+          "$GITHUB_WORKSPACE/package-plan/"
         cp -a "$GITHUB_WORKSPACE/sdk-metadata" "$GITHUB_WORKSPACE/package-plan/"
         printf '%s\n' "$PRIVATE_WORKSPACE_COMMIT" > "$GITHUB_WORKSPACE/package-plan/private-workspace-commit"
         if [ -d "$GITHUB_WORKSPACE/private-workspace/luci-apps" ]; then
@@ -517,6 +532,11 @@ jobs:
         if [ -d openwrt/build-state/build-logs ]; then cp -a openwrt/build-state/build-logs "$artifact/"; fi
         cp -f openwrt/.config "$artifact/metadata/openwrt.config"
         cp -f openwrt/.managed-feeds "$artifact/metadata/managed-feeds"
+        cp -f package-plan/SOURCE-AUDIT.tsv \
+          package-plan/SOURCE-AUDIT.json \
+          package-plan/SOURCE-AUDIT-SUMMARY.txt \
+          package-plan/SOURCE-MANIFEST.tsv \
+          "$artifact/metadata/"
         cp -f package-plan/private-workspace-commit "$artifact/metadata/private-workspace-commit"
         cp -a package-plan/sdk-metadata/. "$artifact/metadata/sdk-metadata/"
         compile_outcome=failure

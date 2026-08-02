@@ -35,6 +35,9 @@ cp -f "$metadata_dir/ASSETS.sha256sums" "$release_dir/SDK-ASSETS.sha256sums"
 cp -f "$metadata_dir/SDK.refs" "$release_dir/SDK.refs"
 cp -f "$openwrt_dir/.config" "$release_dir/package.config" 2>/dev/null || true
 cp -f "$openwrt_dir/.managed-feeds" "$release_dir/MANAGED-FEEDS.txt" 2>/dev/null || true
+for source_report in SOURCE-AUDIT.tsv SOURCE-AUDIT.json SOURCE-AUDIT-SUMMARY.txt SOURCE-MANIFEST.tsv; do
+	cp -f "$openwrt_dir/$source_report" "$release_dir/$source_report"
+done
 if [ -d "$openwrt_dir/build-results" ]; then
 	cp -a "$openwrt_dir/build-results/." "$release_dir/"
 fi
@@ -93,6 +96,10 @@ for file in \
 	FAILED.txt \
 	SKIPPED.txt \
 	MANAGED-FEEDS.txt \
+	SOURCE-AUDIT.tsv \
+	SOURCE-AUDIT.json \
+	SOURCE-AUDIT-SUMMARY.txt \
+	SOURCE-MANIFEST.tsv \
 	FILES.txt \
 	SHA256SUMS; do
 	if [ -f "$release_dir/$file" ]; then

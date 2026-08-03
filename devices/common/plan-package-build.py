@@ -14,6 +14,17 @@ BUILD_TARGET_RE = re.compile(r"^(?:package|tools|toolchain)/[^\s:#%$]+/(?:host/)
 DEP_SPEC_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9_.+@-]*)(/host)?")
 
 
+def unconditional_dependencies(value: str) -> list[str]:
+    dependencies: list[str] = []
+    for token in value.split():
+        if ":" in token or token.startswith("@"):
+            continue
+        match = DEP_SPEC_RE.fullmatch(token.removeprefix("+"))
+        if match:
+            dependencies.append(match.group(1))
+    return dependencies
+
+
 def source_target(source_makefile: str, host: bool = False) -> str | None:
     path = source_makefile.removesuffix("/Makefile")
     if path.startswith("feeds/"):
@@ -63,7 +74,7 @@ def parse_packageinfo(path: Path) -> tuple[dict[str, set[str]], dict[str, str]]:
 
     for target, item in record_targets:
         for value in item.get("Depends", []):
-            for name, _ in DEP_SPEC_RE.findall(value):
+            for name in unconditional_dependencies(value):
                 dependency = package_sources.get(name)
                 if dependency and dependency != target:
                     graph[target].add(dependency)

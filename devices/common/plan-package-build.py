@@ -47,6 +47,7 @@ def parse_packageinfo(path: Path) -> tuple[dict[str, set[str]], dict[str, str]]:
         record[current_key].append(value.strip())
 
     current_target: str | None = None
+    record_targets: list[tuple[str, dict[str, list[str]]]] = []
     for item in records:
         sources = item.get("Source-Makefile", [])
         if sources:
@@ -54,10 +55,18 @@ def parse_packageinfo(path: Path) -> tuple[dict[str, set[str]], dict[str, str]]:
         if not current_target:
             continue
         graph[current_target]
+        record_targets.append((current_target, item))
         for field in ("Package", "Provides"):
             for value in item.get(field, []):
                 for name, _ in DEP_SPEC_RE.findall(value):
                     package_sources[name] = current_target
+
+    for target, item in record_targets:
+        for value in item.get("Depends", []):
+            for name, _ in DEP_SPEC_RE.findall(value):
+                dependency = package_sources.get(name)
+                if dependency and dependency != target:
+                    graph[target].add(dependency)
 
     return graph, package_sources
 

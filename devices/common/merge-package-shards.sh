@@ -45,7 +45,7 @@ for stage_dir in "${stage_dirs[@]}"; do
 		exit 1
 	fi
 
-	for metadata_file in openwrt.config managed-feeds private-workspace-commit sdk-metadata/MANIFEST.refs sdk-metadata/ASSETS.sha256sums sdk-metadata/SDK.refs; do
+	for metadata_file in openwrt.config managed-feeds feeds.conf build-identity SOURCE-AUDIT.tsv SOURCE-AUDIT.json SOURCE-AUDIT-SUMMARY.txt SOURCE-MANIFEST.tsv private-workspace-commit sdk-metadata/MANIFEST.refs sdk-metadata/ASSETS.sha256sums sdk-metadata/SDK.refs; do
 		if [ ! -f "$stage_dir/metadata/$metadata_file" ]; then
 			echo "Missing stage metadata: $stage_dir/metadata/$metadata_file" >&2
 			exit 1
@@ -123,6 +123,11 @@ rm -f "$results_dir/RESULT-DIFFERENCE.txt"
 
 cp -f "$canonical/metadata/openwrt.config" "$openwrt_dir/.config"
 cp -f "$canonical/metadata/managed-feeds" "$openwrt_dir/.managed-feeds"
+cp -f "$canonical/metadata/feeds.conf" "$openwrt_dir/feeds.conf"
+cp -f "$canonical/metadata/build-identity" "$openwrt_dir/BUILD-IDENTITY"
+for source_report in SOURCE-AUDIT.tsv SOURCE-AUDIT.json SOURCE-AUDIT-SUMMARY.txt SOURCE-MANIFEST.tsv; do
+	cp -f "$canonical/metadata/$source_report" "$openwrt_dir/$source_report"
+done
 cp -a "$canonical/metadata/sdk-metadata/." "$metadata_dir/"
 
 found="$(($(wc -l < "$results_dir/BUILD-RESULTS.tsv") - 1))"

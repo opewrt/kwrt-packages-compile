@@ -35,6 +35,8 @@ cp -f "$metadata_dir/ASSETS.sha256sums" "$release_dir/SDK-ASSETS.sha256sums"
 cp -f "$metadata_dir/SDK.refs" "$release_dir/SDK.refs"
 cp -f "$openwrt_dir/.config" "$release_dir/package.config" 2>/dev/null || true
 cp -f "$openwrt_dir/.managed-feeds" "$release_dir/MANAGED-FEEDS.txt" 2>/dev/null || true
+cp -f "$openwrt_dir/feeds.conf" "$release_dir/feeds.conf"
+cp -f "$openwrt_dir/BUILD-IDENTITY" "$release_dir/BUILD-IDENTITY"
 for source_report in SOURCE-AUDIT.tsv SOURCE-AUDIT.json SOURCE-AUDIT-SUMMARY.txt SOURCE-MANIFEST.tsv; do
 	cp -f "$openwrt_dir/$source_report" "$release_dir/$source_report"
 done
@@ -53,6 +55,7 @@ fi
 	echo "sdk_sha256=${SDK_SHA256:-unknown}"
 	echo "package_arch=$package_arch"
 	echo "package_filter=${PACKAGE_FILTER:-.*}"
+	echo "build_identity=$(<"$openwrt_dir/BUILD-IDENTITY")"
 	echo "package_compiler=${GITHUB_SHA:-$(git -C "${GITHUB_WORKSPACE:-$openwrt_dir}" rev-parse HEAD 2>/dev/null || true)}"
 	echo "kwrt_main=${PRIVATE_WORKSPACE_COMMIT:-none}"
 	if [ -d "${GITHUB_WORKSPACE:-}/private-workspace/.git" ]; then
@@ -96,6 +99,8 @@ for file in \
 	FAILED.txt \
 	SKIPPED.txt \
 	MANAGED-FEEDS.txt \
+	feeds.conf \
+	BUILD-IDENTITY \
 	SOURCE-AUDIT.tsv \
 	SOURCE-AUDIT.json \
 	SOURCE-AUDIT-SUMMARY.txt \

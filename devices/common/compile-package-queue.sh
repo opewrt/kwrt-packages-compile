@@ -35,6 +35,17 @@ if [ -f "$state_dir/queue.sha256" ] && [ "$(<"$state_dir/queue.sha256")" != "$qu
 	exit 1
 fi
 printf '%s\n' "$queue_sha256" > "$state_dir/queue.sha256"
+if [ -n "${BUILD_IDENTITY:-}" ]; then
+	if ! [[ "$BUILD_IDENTITY" =~ ^[0-9a-f]{64}$ ]]; then
+		echo "Invalid BUILD_IDENTITY: $BUILD_IDENTITY" >&2
+		exit 1
+	fi
+	if [ -f "$state_dir/build-identity" ] && [ "$(<"$state_dir/build-identity")" != "$BUILD_IDENTITY" ]; then
+		echo "Saved queue state does not match the current build identity" >&2
+		exit 1
+	fi
+	printf '%s\n' "$BUILD_IDENTITY" > "$state_dir/build-identity"
+fi
 
 terminate_active() {
 	if [ -n "$active_pid" ] && kill -0 -- "-$active_pid" 2>/dev/null; then
@@ -93,6 +104,7 @@ write_state() {
 	{
 		echo "status=$status"
 		echo "queue_sha256=$queue_sha256"
+		echo "build_identity=${BUILD_IDENTITY:-none}"
 		echo "current_unit=$current_unit"
 		echo "next_unit=$next"
 		echo "total_units=$total_units"

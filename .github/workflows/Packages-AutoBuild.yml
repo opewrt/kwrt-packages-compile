@@ -320,7 +320,7 @@ jobs:
           --managed-feeds .managed-feeds \
           --private-feeds .private-feeds \
           --output . \
-          --mode report
+          --mode strict
 
     - name: Generate source and host build plan
       id: plan
@@ -464,10 +464,13 @@ jobs:
         set -euo pipefail
         mkdir -p openwrt
         tar --zstd -xf package-plan/prepared-sdk.tar.zst -C openwrt
+        rm -rf openwrt/build-state
         if [ -f package-plan/private-feeds.tar.zst ]; then
           mkdir -p "$GITHUB_WORKSPACE/private-workspace"
           tar --zstd -xf package-plan/private-feeds.tar.zst -C "$GITHUB_WORKSPACE/private-workspace"
         fi
+        test "$(<package-plan/build-plan/build-identity)" = "$BUILD_IDENTITY"
+        cmp -s package-plan/SOURCE-MANIFEST.tsv openwrt/SOURCE-MANIFEST.tsv
         ln -s /mnt/openwrt/dl openwrt/dl
         ln -s /mnt/openwrt/ccache openwrt/.ccache
 
@@ -511,16 +514,6 @@ jobs:
         test -f openwrt/build-state/QUEUE-STATE.txt
         cat openwrt/build-state/QUEUE-STATE.txt
 
-    - name: Save queue checkpoint
-      uses: actions/cache/save@v4
-      if: always() && steps.compile.outcome != 'skipped' && env.NOCACHE != 'true'
-      with:
-        path: |
-          openwrt/staging_dir
-          openwrt/bin
-          openwrt/build-state
-        key: kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
-
     - name: Save compiler cache
       uses: actions/cache/save@v4
       if: always() && steps.compile.outcome != 'skipped' && env.NOCACHE != 'true'
@@ -535,6 +528,16 @@ jobs:
         path: /mnt/openwrt/dl
         key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
 
+    - name: Save queue checkpoint
+      uses: actions/cache/save@v4
+      if: always() && steps.compile.outcome != 'skipped' && env.NOCACHE != 'true'
+      with:
+        path: |
+          openwrt/staging_dir
+          openwrt/bin
+          openwrt/build-state
+        key: kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
+
     - name: Prepare cumulative result
       if: always() && steps.compile.outcome != 'skipped'
       run: |
@@ -546,6 +549,8 @@ jobs:
         if [ -d openwrt/build-state/build-logs ]; then cp -a openwrt/build-state/build-logs "$artifact/"; fi
         cp -f openwrt/.config "$artifact/metadata/openwrt.config"
         cp -f openwrt/.managed-feeds "$artifact/metadata/managed-feeds"
+        cp -f openwrt/feeds.conf "$artifact/metadata/feeds.conf"
+        cp -f package-plan/build-plan/build-identity "$artifact/metadata/build-identity"
         cp -f package-plan/SOURCE-AUDIT.tsv \
           package-plan/SOURCE-AUDIT.json \
           package-plan/SOURCE-AUDIT-SUMMARY.txt \

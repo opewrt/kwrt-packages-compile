@@ -94,6 +94,8 @@ for file in \
 	PACKAGE-BUILD.refs \
 	package.config \
 	BUILD-RESULTS.tsv \
+	EXPECTED.txt \
+	FAILED-DEPENDENCIES.txt \
 	SUMMARY.txt \
 	SUCCESS.txt \
 	FAILED.txt \

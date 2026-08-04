@@ -199,10 +199,10 @@ def main() -> int:
     graph, _, target_packages = parse_packageinfo(args.packageinfo)
     parse_printdb(args.printdb, graph)
     feeds = {line.strip() for line in args.managed_feeds.read_text(encoding="utf-8").splitlines() if line.strip()}
-    kernel_only = {
+    kernel_sources = {
         target
         for target, packages in target_packages.items()
-        if packages and all(package == "kernel" or package.startswith("kmod-") for package in packages)
+        if any(package == "kernel" or package.startswith("kmod-") for package in packages)
     }
     managed = {
         target: ref
@@ -212,7 +212,7 @@ def main() -> int:
     selected = {
         target
         for target, ref in managed.items()
-        if target not in kernel_only and package_filter.search(ref.split("/", 1)[1])
+        if target not in kernel_sources and package_filter.search(ref.split("/", 1)[1])
     }
     skipped = sorted(set(managed.values()) - {managed[target] for target in selected})
     if not selected:
@@ -221,7 +221,7 @@ def main() -> int:
     closure = {
         target
         for target in reachable(selected, graph)
-        if target not in kernel_only
+        if target not in kernel_sources
     }
     closure_components, closure_component_of = tarjan(closure, graph)
     closure_consumers: dict[int, set[int]] = defaultdict(set)

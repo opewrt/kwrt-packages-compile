@@ -60,6 +60,9 @@ env:
   TZ: Asia/Shanghai
   CCACHE_DIR: /mnt/openwrt/ccache
 
+permissions:
+  contents: write
+
 jobs:
   prepare:
     if: github.repository_owner == 'opewrt'
@@ -760,8 +763,6 @@ jobs:
     - name: Upload packages for release
       uses: softprops/action-gh-release@v2.6.2
       if: env.CREATE_RELEASE == 'true' && env.UPLOAD_PACKAGES_FOR_RELEASE == 'true' && steps.private-feeds.outputs.enabled == 'true'
-      env:
-        GITHUB_TOKEN: ${{ secrets.REPO_TOKEN }}
       with:
         files: package-release/release-assets/*
         name: Packages for ${{ needs.plan.outputs.sdk_tag }}

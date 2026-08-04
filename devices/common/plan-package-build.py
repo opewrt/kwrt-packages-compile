@@ -218,13 +218,10 @@ def main() -> int:
     if not selected:
         raise SystemExit("Package regex matched no managed source packages")
 
-    closure = reachable(selected, graph)
-    managed_prefixes = tuple("package/feeds/{}/".format(feed) for feed in sorted(feeds))
     closure = {
         target
-        for target in closure
+        for target in reachable(selected, graph)
         if target not in kernel_only
-        and (not target.startswith("package/") or target.startswith(managed_prefixes))
     }
     closure_components, closure_component_of = tarjan(closure, graph)
     closure_consumers: dict[int, set[int]] = defaultdict(set)

@@ -17,7 +17,13 @@ rm -rf "$release_dir"
 mkdir -p "$release_dir/packages/$package_arch" "$release_dir/release-assets"
 
 if [ -d "$openwrt_dir/bin/packages/$package_arch" ]; then
-	cp -a "$openwrt_dir/bin/packages/$package_arch/." "$release_dir/packages/$package_arch/"
+	while read -r feed_name; do
+		[ -n "$feed_name" ] || continue
+		feed_dir="$openwrt_dir/bin/packages/$package_arch/$feed_name"
+		[ -d "$feed_dir" ] || continue
+		mkdir -p "$release_dir/packages/$package_arch/$feed_name"
+		cp -a "$feed_dir/." "$release_dir/packages/$package_arch/$feed_name/"
+	done < "$openwrt_dir/.managed-feeds"
 fi
 
 if find "$release_dir/packages" -type f \( -name 'kernel_*.ipk' -o -name 'kmod-*.ipk' \) -print -quit | grep -q .; then

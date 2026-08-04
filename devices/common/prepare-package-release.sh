@@ -107,7 +107,7 @@ for file in \
 	SOURCE-MANIFEST.tsv \
 	FILES.txt \
 	SHA256SUMS; do
-	if [ -f "$release_dir/$file" ]; then
+	if [ -s "$release_dir/$file" ]; then
 		cp -f "$release_dir/$file" "$asset_dir/"
 	fi
 done

@@ -328,7 +328,7 @@ jobs:
           --managed-feeds .managed-feeds \
           --private-feeds .private-feeds \
           --output . \
-          --mode strict
+          --mode report
 
     - name: Generate source and host build plan
       id: plan

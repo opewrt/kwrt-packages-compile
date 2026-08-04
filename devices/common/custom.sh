@@ -6,7 +6,7 @@ shopt -s extglob nullglob
 PRIVATE_FEEDS_FILE="$PWD/.private-feeds"
 MANAGED_FEEDS_FILE="$PWD/.managed-feeds"
 rm -f "$PRIVATE_FEEDS_FILE" "$MANAGED_FEEDS_FILE"
-printf '%s\n' kiddin9 > "$MANAGED_FEEDS_FILE"
+printf '%s\n' packages luci routing kiddin9 > "$MANAGED_FEEDS_FILE"
 
 if [ -d "${PRIVATE_FEEDS_ROOT:-}" ]; then
 	for repo_path in "$PRIVATE_FEEDS_ROOT"/*; do

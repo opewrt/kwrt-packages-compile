@@ -34,9 +34,12 @@ def source_target(source_makefile: str, host: bool = False) -> str | None:
     return f"{path}/{'host/' if host else ''}compile"
 
 
-def parse_packageinfo(path: Path) -> tuple[dict[str, set[str]], dict[str, str]]:
+def parse_packageinfo(
+    path: Path,
+) -> tuple[dict[str, set[str]], dict[str, str], dict[str, set[str]]]:
     graph: dict[str, set[str]] = defaultdict(set)
     package_sources: dict[str, str] = {}
+    target_packages: dict[str, set[str]] = defaultdict(set)
     records: list[dict[str, list[str]]] = []
     record: dict[str, list[str]] = defaultdict(list)
     current_key: str | None = None
@@ -71,6 +74,8 @@ def parse_packageinfo(path: Path) -> tuple[dict[str, set[str]], dict[str, str]]:
             for value in item.get(field, []):
                 for name, _ in DEP_SPEC_RE.findall(value):
                     package_sources[name] = current_target
+                    if field == "Package":
+                        target_packages[current_target].add(name)
 
     for target, item in record_targets:
         for value in item.get("Depends", []):
@@ -79,7 +84,7 @@ def parse_packageinfo(path: Path) -> tuple[dict[str, set[str]], dict[str, str]]:
                 if dependency and dependency != target:
                     graph[target].add(dependency)
 
-    return graph, package_sources
+    return graph, package_sources, target_packages
 
 
 def parse_printdb(path: Path, graph: dict[str, set[str]]) -> None:
@@ -191,20 +196,36 @@ def main() -> int:
     except re.error as error:
         parser.error(f"invalid package regex: {error}")
 
-    graph, _ = parse_packageinfo(args.packageinfo)
+    graph, _, target_packages = parse_packageinfo(args.packageinfo)
     parse_printdb(args.printdb, graph)
     feeds = {line.strip() for line in args.managed_feeds.read_text(encoding="utf-8").splitlines() if line.strip()}
+    kernel_only = {
+        target
+        for target, packages in target_packages.items()
+        if packages and all(package == "kernel" or package.startswith("kmod-") for package in packages)
+    }
     managed = {
         target: ref
         for target in graph
         if (ref := managed_ref(target)) and ref.split("/", 1)[0] in feeds
     }
-    selected = {target for target, ref in managed.items() if package_filter.search(ref.split("/", 1)[1])}
+    selected = {
+        target
+        for target, ref in managed.items()
+        if target not in kernel_only and package_filter.search(ref.split("/", 1)[1])
+    }
     skipped = sorted(set(managed.values()) - {managed[target] for target in selected})
     if not selected:
         raise SystemExit("Package regex matched no managed source packages")
 
     closure = reachable(selected, graph)
+    managed_prefixes = tuple("package/feeds/{}/".format(feed) for feed in sorted(feeds))
+    closure = {
+        target
+        for target in closure
+        if target not in kernel_only
+        and (not target.startswith("package/") or target.startswith(managed_prefixes))
+    }
     closure_components, closure_component_of = tarjan(closure, graph)
     closure_consumers: dict[int, set[int]] = defaultdict(set)
     for consumer in closure:

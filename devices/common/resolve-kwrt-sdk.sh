@@ -6,6 +6,7 @@ package_arch="${2:-}"
 requested_tag="${3:-}"
 requested_asset="${4:-}"
 metadata_dir="${5:-$PWD/sdk-metadata}"
+expected_openwrt="${OPENWRT_REF:-8c660861ef97b40395671b4c1bfde2c0867e18b9}"
 
 if [ -z "$package_arch" ]; then
 	echo "Usage: resolve-kwrt-sdk.sh REPOSITORY PACKAGE_ARCH [TAG] [ASSET] [METADATA_DIR]" >&2
@@ -32,7 +33,7 @@ try_release() {
 	local tag="$1"
 	local work_dir="$2"
 	local release_file="$work_dir/release.json"
-	local manifest_url checksums_url manifest_arch sdk_asset sdk_url sdk_sha manifest_sha
+	local manifest_url checksums_url manifest_arch manifest_openwrt sdk_asset sdk_url sdk_sha manifest_sha
 
 	mkdir -p "$work_dir"
 	if ! get_release "$tag" "$release_file"; then
@@ -51,7 +52,8 @@ try_release() {
 	curl -fsSL --retry 5 --retry-delay 2 "$manifest_url" -o "$work_dir/MANIFEST.refs"
 	curl -fsSL --retry 5 --retry-delay 2 "$checksums_url" -o "$work_dir/ASSETS.sha256sums"
 	manifest_arch="$(sed -n 's/^package_arch=//p' "$work_dir/MANIFEST.refs" | tail -n 1)"
-	if [ "$manifest_arch" != "$package_arch" ]; then
+	manifest_openwrt="$(sed -n 's/^openwrt=//p' "$work_dir/MANIFEST.refs" | tail -n 1)"
+	if [ "$manifest_arch" != "$package_arch" ] || [ "$manifest_openwrt" != "$expected_openwrt" ]; then
 		return 1
 	fi
 

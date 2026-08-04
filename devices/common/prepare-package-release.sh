@@ -14,16 +14,18 @@ fi
 openwrt_dir="$(cd "$openwrt_dir" && pwd)"
 metadata_dir="$(cd "$metadata_dir" && pwd)"
 rm -rf "$release_dir"
-mkdir -p "$release_dir/packages/$package_arch" "$release_dir/targets" "$release_dir/release-assets"
+mkdir -p "$release_dir/packages/$package_arch" "$release_dir/release-assets"
 
 if [ -d "$openwrt_dir/bin/packages/$package_arch" ]; then
 	cp -a "$openwrt_dir/bin/packages/$package_arch/." "$release_dir/packages/$package_arch/"
 fi
-if [ -d "$openwrt_dir/bin/targets" ]; then
-	cp -a "$openwrt_dir/bin/targets/." "$release_dir/targets/"
+
+if find "$release_dir/packages" -type f \( -name 'kernel_*.ipk' -o -name 'kmod-*.ipk' \) -print -quit | grep -q .; then
+	echo "Package Release must not contain kernel or kmod IPKs" >&2
+	exit 1
 fi
 
-if ! find "$release_dir/packages" "$release_dir/targets" -type f -name '*.ipk' -print -quit | grep -q .; then
+if ! find "$release_dir/packages" -type f -name '*.ipk' -print -quit | grep -q .; then
 	if [ "${REQUIRE_IPK:-true}" = "true" ]; then
 		echo "No compiled IPK files were found" >&2
 		exit 1
@@ -80,9 +82,6 @@ rm -rf "$release_dir/release-assets"
 asset_dir="$release_dir/release-assets"
 mkdir -p "$asset_dir"
 tar --use-compress-program="zstd -T0 -6" -cf "$asset_dir/packages-${package_arch}.tar.zst" -C "$release_dir" packages
-if find "$release_dir/targets" -type f -name '*.ipk' -print -quit | grep -q .; then
-	tar --use-compress-program="zstd -T0 -6" -cf "$asset_dir/targets-${package_arch}.tar.zst" -C "$release_dir" targets
-fi
 if find "$release_dir/build-logs" -type f -print -quit 2>/dev/null | grep -q .; then
 	tar --use-compress-program="zstd -T0 -6" -cf "$asset_dir/build-logs.tar.zst" -C "$release_dir" build-logs
 fi

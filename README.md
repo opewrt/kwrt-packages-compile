@@ -1,15 +1,27 @@
-# 引用请标明出处, 谢谢配合.
+# Kwrt 软件包编译
 
-默认只编译24小时内有更新的软件包
+本仓库使用匹配的 Kwrt SDK 独立编译软件包并发布 IPK、Release 和软件包服务器内容
 
-.* 编译所有软件包
+编译范围
 
-.* 2 编译最近两天内有更新的软件包.
+```text
+packages
+luci + 中文翻译
+routing
+kiddin9
+私有 LuCI feeds
+```
 
-luci-app 编译所有 luci-app 软件包
+`packages` 输入使用源码目录正则
 
-luci-app-(aria2|acme) 编译 luci-app-aria2 和 luci-app-acme
-
+```text
+.*
+luci-app
+luci-app-(aria2|acme)
 ^[a-l]
-
 ^[^a-l]
+```
+
+默认值 `.*` 编译全部 managed feeds 软件包及其依赖
+
+OpenWrt base、target-specific、kernel 和 kmod 由 Kwrt 构建并发布

@@ -218,11 +218,11 @@ def main() -> int:
     if not selected:
         raise SystemExit("Package regex matched no managed source packages")
 
-    closure = {
-        target
-        for target in reachable(selected, graph)
-        if target not in kernel_sources
+    dependency_graph = {
+        target: dependencies - kernel_sources
+        for target, dependencies in graph.items()
     }
+    closure = reachable(selected, dependency_graph)
     closure_components, closure_component_of = tarjan(closure, graph)
     closure_consumers: dict[int, set[int]] = defaultdict(set)
     for consumer in closure:

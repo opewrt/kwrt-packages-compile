@@ -38,6 +38,10 @@ on:
         description: 'exact kwrt-packages commit, empty uses SDK MANIFEST.refs'
         required: false
         default: ''
+      resume_build_identity:
+        description: 'previous build identity for a queue-compatible checkpoint migration'
+        required: false
+        default: ''
       packages:
         description: 'managed package directory regex'
         required: false
@@ -52,13 +56,6 @@ on:
         required: false
         type: boolean
         default: false
-  push:
-    branches:
-      - main
-    paths:
-      - '.github/workflows/Packages-AutoBuild.yml'
-      - 'devices/**'
-
 env:
   TZ: Asia/Shanghai
   CCACHE_DIR: /mnt/openwrt/ccache
@@ -75,6 +72,7 @@ jobs:
       sdk_asset: ${{ steps.inputs.outputs.sdk_asset }}
       main_commit: ${{ steps.inputs.outputs.main_commit }}
       packages_commit: ${{ steps.inputs.outputs.packages_commit }}
+      resume_build_identity: ${{ steps.inputs.outputs.resume_build_identity }}
       release: ${{ steps.inputs.outputs.release }}
       nocache: ${{ steps.inputs.outputs.nocache }}
       upload_artifact: ${{ steps.settings.outputs.upload_artifact }}
@@ -95,6 +93,7 @@ jobs:
         EVENT_SDK_ASSET: ${{ github.event.client_payload.sdk_asset || inputs.sdk_asset }}
         EVENT_MAIN_COMMIT: ${{ github.event.client_payload.main_commit || inputs.main_commit }}
         EVENT_PACKAGES_COMMIT: ${{ github.event.client_payload.packages_commit || inputs.packages_commit }}
+        EVENT_RESUME_BUILD_IDENTITY: ${{ github.event.client_payload.resume_build_identity || inputs.resume_build_identity }}
         DISPATCH_RELEASE: ${{ toJSON(github.event.client_payload.release) }}
         DISPATCH_NOCACHE: ${{ toJSON(github.event.client_payload.nocache) }}
         INPUT_RELEASE: ${{ toJSON(inputs.release) }}
@@ -105,8 +104,13 @@ jobs:
         packages="${EVENT_PACKAGES:-.*}"
         sdk_repository="${EVENT_SDK_REPOSITORY:-opewrt/Kwrt}"
         packages_commit="${EVENT_PACKAGES_COMMIT:-}"
+        resume_build_identity="${EVENT_RESUME_BUILD_IDENTITY:-}"
         if [ -n "$packages_commit" ] && ! [[ "$packages_commit" =~ ^[0-9a-f]{40}$ ]]; then
           echo "packages_commit must be an exact 40-character lowercase commit" >&2
+          exit 1
+        fi
+        if [ -n "$resume_build_identity" ] && ! [[ "$resume_build_identity" =~ ^[0-9a-f]{64}$ ]]; then
+          echo "resume_build_identity must be an exact 64-character lowercase SHA256" >&2
           exit 1
         fi
         case "$EVENT_NAME" in
@@ -141,6 +145,7 @@ jobs:
           echo "sdk_asset=${EVENT_SDK_ASSET:-}"
           echo "main_commit=${EVENT_MAIN_COMMIT:-}"
           echo "packages_commit=$packages_commit"
+          echo "resume_build_identity=$resume_build_identity"
           echo "release=$release"
           echo "nocache=$nocache"
         } >> "$GITHUB_OUTPUT"
@@ -401,6 +406,7 @@ jobs:
       SDK_TAG: ${{ needs.plan.outputs.sdk_tag }}
       SDK_SHA256: ${{ needs.plan.outputs.sdk_sha256 }}
       BUILD_IDENTITY: ${{ needs.plan.outputs.build_identity }}
+      RESUME_BUILD_IDENTITY: ${{ needs.prepare.outputs.resume_build_identity || needs.plan.outputs.build_identity }}
       STAGE_NAME: sequential
 
     steps:
@@ -458,6 +464,7 @@ jobs:
         key: kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
           kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-
+          kwrt-packages-ccache-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-
 
     - name: Restore prepared SDK
       run: |
@@ -475,6 +482,7 @@ jobs:
         ln -s /mnt/openwrt/ccache openwrt/.ccache
 
     - name: Restore queue checkpoint
+      id: checkpoint
       uses: actions/cache/restore@v4
       if: env.NOCACHE != 'true'
       with:
@@ -482,9 +490,22 @@ jobs:
           openwrt/staging_dir
           openwrt/bin
           openwrt/build-state
+          openwrt/build_dir/target-*/linux-*/symvers
         key: kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
         restore-keys: |
           kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-
+
+    - name: Restore legacy queue checkpoint
+      uses: actions/cache/restore@v4
+      if: env.NOCACHE != 'true' && steps.checkpoint.outputs.cache-matched-key == '' && env.RESUME_BUILD_IDENTITY != env.BUILD_IDENTITY
+      with:
+        path: |
+          openwrt/staging_dir
+          openwrt/bin
+          openwrt/build-state
+        key: kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
+        restore-keys: |
+          kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.RESUME_BUILD_IDENTITY }}-
 
     - name: Compile dependency queue
       id: compile
@@ -536,6 +557,7 @@ jobs:
           openwrt/staging_dir
           openwrt/bin
           openwrt/build-state
+          openwrt/build_dir/target-*/linux-*/symvers
         key: kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
 
     - name: Prepare cumulative result

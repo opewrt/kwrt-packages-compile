@@ -40,12 +40,40 @@ if [ -n "${BUILD_IDENTITY:-}" ]; then
 		echo "Invalid BUILD_IDENTITY: $BUILD_IDENTITY" >&2
 		exit 1
 	fi
-	if [ -f "$state_dir/build-identity" ] && [ "$(<"$state_dir/build-identity")" != "$BUILD_IDENTITY" ]; then
-		echo "Saved queue state does not match the current build identity" >&2
+	if [ -n "${RESUME_BUILD_IDENTITY:-}" ] && ! [[ "$RESUME_BUILD_IDENTITY" =~ ^[0-9a-f]{64}$ ]]; then
+		echo "Invalid RESUME_BUILD_IDENTITY: $RESUME_BUILD_IDENTITY" >&2
 		exit 1
+	fi
+	if [ -f "$state_dir/build-identity" ] && [ "$(<"$state_dir/build-identity")" != "$BUILD_IDENTITY" ]; then
+		saved_build_identity="$(<"$state_dir/build-identity")"
+		if [ -z "${RESUME_BUILD_IDENTITY:-}" ] || [ "$saved_build_identity" != "$RESUME_BUILD_IDENTITY" ]; then
+			echo "Saved queue state does not match the current build identity" >&2
+			exit 1
+		fi
+		echo "migrate queue checkpoint from $saved_build_identity to $BUILD_IDENTITY"
+		printf '%s\n' "$saved_build_identity" > "$state_dir/resumed-from-build-identity"
 	fi
 	printf '%s\n' "$BUILD_IDENTITY" > "$state_dir/build-identity"
 fi
+
+requeue_missing_mac80211_symvers() {
+	local producer_unit consumer_unit
+	producer_unit="$(awk -F '\t' '$4 ~ /\/mac80211\/compile$/ { print $1; exit }' "$queue_file")"
+	consumer_unit="$(awk -F '\t' '$4 ~ /\/batman-adv\/compile$/ { print $1; exit }' "$queue_file")"
+	[ -n "$producer_unit" ] && [ -n "$consumer_unit" ] || return 0
+	grep -Fqx -- "$producer_unit" "$completed_file" || return 0
+	if grep -Fqx -- "$consumer_unit" "$completed_file"; then
+		return 0
+	fi
+	if find build_dir -path '*/symvers/mac80211.symvers' -print -quit 2>/dev/null | grep -q .; then
+		return 0
+	fi
+	awk -v unit="$producer_unit" '$0 != unit' "$completed_file" > "$completed_file.tmp"
+	mv "$completed_file.tmp" "$completed_file"
+	echo "requeue $producer_unit to restore mac80211.symvers before $consumer_unit"
+}
+
+requeue_missing_mac80211_symvers
 
 terminate_active() {
 	if [ -n "$active_pid" ] && kill -0 -- "-$active_pid" 2>/dev/null; then

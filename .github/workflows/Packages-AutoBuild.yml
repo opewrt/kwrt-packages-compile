@@ -364,13 +364,6 @@ jobs:
           echo "build_identity=$build_identity"
         } >> "$GITHUB_OUTPUT"
 
-    - name: Save planner download cache
-      uses: actions/cache/save@v4
-      if: always() && env.NOCACHE != 'true'
-      with:
-        path: /mnt/openwrt/dl
-        key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ steps.sdk.outputs.release_tag }}-plan-${{ github.run_id }}-${{ github.run_attempt }}
-
     - name: Package prepared SDK and plan
       run: |
         set -euo pipefail

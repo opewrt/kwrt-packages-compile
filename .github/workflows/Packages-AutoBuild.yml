@@ -42,6 +42,10 @@ on:
         description: 'previous build identity for a queue-compatible checkpoint migration'
         required: false
         default: ''
+      resume_checkpoint_run_id:
+        description: 'previous workflow run ID containing a full queue checkpoint artifact'
+        required: false
+        default: ''
       packages:
         description: 'managed package directory regex'
         required: false
@@ -62,6 +66,7 @@ env:
 
 permissions:
   contents: write
+  actions: read
 
 jobs:
   prepare:
@@ -76,6 +81,7 @@ jobs:
       main_commit: ${{ steps.inputs.outputs.main_commit }}
       packages_commit: ${{ steps.inputs.outputs.packages_commit }}
       resume_build_identity: ${{ steps.inputs.outputs.resume_build_identity }}
+      resume_checkpoint_run_id: ${{ steps.inputs.outputs.resume_checkpoint_run_id }}
       release: ${{ steps.inputs.outputs.release }}
       nocache: ${{ steps.inputs.outputs.nocache }}
       upload_artifact: ${{ steps.settings.outputs.upload_artifact }}
@@ -97,6 +103,7 @@ jobs:
         EVENT_MAIN_COMMIT: ${{ github.event.client_payload.main_commit || inputs.main_commit }}
         EVENT_PACKAGES_COMMIT: ${{ github.event.client_payload.packages_commit || inputs.packages_commit }}
         EVENT_RESUME_BUILD_IDENTITY: ${{ github.event.client_payload.resume_build_identity || inputs.resume_build_identity }}
+        EVENT_RESUME_CHECKPOINT_RUN_ID: ${{ github.event.client_payload.resume_checkpoint_run_id || inputs.resume_checkpoint_run_id }}
         DISPATCH_RELEASE: ${{ toJSON(github.event.client_payload.release) }}
         DISPATCH_NOCACHE: ${{ toJSON(github.event.client_payload.nocache) }}
         INPUT_RELEASE: ${{ toJSON(inputs.release) }}
@@ -108,12 +115,17 @@ jobs:
         sdk_repository="${EVENT_SDK_REPOSITORY:-opewrt/Kwrt}"
         packages_commit="${EVENT_PACKAGES_COMMIT:-}"
         resume_build_identity="${EVENT_RESUME_BUILD_IDENTITY:-}"
+        resume_checkpoint_run_id="${EVENT_RESUME_CHECKPOINT_RUN_ID:-}"
         if [ -n "$packages_commit" ] && ! [[ "$packages_commit" =~ ^[0-9a-f]{40}$ ]]; then
           echo "packages_commit must be an exact 40-character lowercase commit" >&2
           exit 1
         fi
         if [ -n "$resume_build_identity" ] && ! [[ "$resume_build_identity" =~ ^[0-9a-f]{64}$ ]]; then
           echo "resume_build_identity must be an exact 64-character lowercase SHA256" >&2
+          exit 1
+        fi
+        if [ -n "$resume_checkpoint_run_id" ] && ! [[ "$resume_checkpoint_run_id" =~ ^[0-9]+$ ]]; then
+          echo "resume_checkpoint_run_id must be a numeric workflow run ID" >&2
           exit 1
         fi
         case "$EVENT_NAME" in
@@ -149,6 +161,7 @@ jobs:
           echo "main_commit=${EVENT_MAIN_COMMIT:-}"
           echo "packages_commit=$packages_commit"
           echo "resume_build_identity=$resume_build_identity"
+          echo "resume_checkpoint_run_id=$resume_checkpoint_run_id"
           echo "release=$release"
           echo "nocache=$nocache"
         } >> "$GITHUB_OUTPUT"
@@ -403,6 +416,7 @@ jobs:
       SDK_SHA256: ${{ needs.plan.outputs.sdk_sha256 }}
       BUILD_IDENTITY: ${{ needs.plan.outputs.build_identity }}
       RESUME_BUILD_IDENTITY: ${{ needs.prepare.outputs.resume_build_identity || needs.plan.outputs.build_identity }}
+      CHECKPOINT_RUN_ID: ${{ needs.prepare.outputs.resume_checkpoint_run_id }}
       STAGE_NAME: sequential
 
     steps:
@@ -477,10 +491,20 @@ jobs:
         ln -s /mnt/openwrt/dl openwrt/dl
         ln -s /mnt/openwrt/ccache openwrt/.ccache
 
+    - name: Restore queue checkpoint artifact
+      if: env.CHECKPOINT_RUN_ID != ''
+      uses: actions/download-artifact@v4.3.0
+      with:
+        name: package-checkpoint
+        path: openwrt
+        github-token: ${{ github.token }}
+        repository: ${{ github.repository }}
+        run-id: ${{ env.CHECKPOINT_RUN_ID }}
+
     - name: Restore queue checkpoint
       id: checkpoint
       uses: actions/cache/restore@v4
-      if: env.NOCACHE != 'true'
+      if: env.NOCACHE != 'true' && env.CHECKPOINT_RUN_ID == ''
       with:
         path: |
           openwrt/staging_dir
@@ -493,7 +517,7 @@ jobs:
 
     - name: Restore legacy queue checkpoint
       uses: actions/cache/restore@v4
-      if: env.NOCACHE != 'true' && steps.checkpoint.outputs.cache-matched-key == '' && env.RESUME_BUILD_IDENTITY != env.BUILD_IDENTITY
+      if: env.NOCACHE != 'true' && env.CHECKPOINT_RUN_ID == '' && steps.checkpoint.outputs.cache-matched-key == '' && env.RESUME_BUILD_IDENTITY != env.BUILD_IDENTITY
       with:
         path: |
           openwrt/staging_dir
@@ -555,6 +579,20 @@ jobs:
           openwrt/build-state
           openwrt/build_dir/target-*/linux-*/symvers
         key: kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
+
+    - name: Upload queue checkpoint artifact
+      uses: actions/upload-artifact@v4.6.2
+      if: always() && steps.compile.outcome != 'skipped'
+      with:
+        name: package-checkpoint
+        path: |
+          openwrt/staging_dir
+          openwrt/bin
+          openwrt/build-state
+          openwrt/build_dir/target-*/linux-*/symvers
+        if-no-files-found: error
+        compression-level: 0
+        retention-days: 2
 
     - name: Prepare cumulative result
       if: always() && steps.compile.outcome != 'skipped'

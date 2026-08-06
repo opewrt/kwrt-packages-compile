@@ -1,0 +1,9 @@
+--- a/feeds/packages/net/aardvark-dns/Makefile
++++ b/feeds/packages/net/aardvark-dns/Makefile
+@@ -40,4 +40,6 @@ define Package/aardvark-dns/install
+ endef
+
++Build/Compile=$(call Build/Compile/Cargo,,--locked)
++
+ $(eval $(call RustBinPackage,aardvark-dns))
+ $(eval $(call BuildPackage,aardvark-dns))

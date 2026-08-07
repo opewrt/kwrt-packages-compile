@@ -496,10 +496,18 @@ jobs:
       uses: actions/download-artifact@v4.3.0
       with:
         name: package-checkpoint
-        path: openwrt
+        path: ${{ runner.temp }}/package-checkpoint
         github-token: ${{ github.token }}
         repository: ${{ github.repository }}
         run-id: ${{ env.CHECKPOINT_RUN_ID }}
+
+    - name: Extract queue checkpoint artifact
+      if: env.CHECKPOINT_RUN_ID != ''
+      run: |
+        set -euo pipefail
+        checkpoint="$RUNNER_TEMP/package-checkpoint/package-checkpoint.tar.zst"
+        test -f "$checkpoint"
+        tar --zstd -xf "$checkpoint" -C openwrt
 
     - name: Restore queue checkpoint
       id: checkpoint
@@ -580,16 +588,25 @@ jobs:
           openwrt/build_dir/target-*/linux-*/symvers
         key: kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
 
+    - name: Package queue checkpoint artifact
+      if: always() && steps.compile.outcome != 'skipped'
+      run: |
+        set -euo pipefail
+        paths="$RUNNER_TEMP/package-checkpoint-paths"
+        printf '%s\n' staging_dir bin build-state > "$paths"
+        shopt -s nullglob
+        for path in openwrt/build_dir/target-*/linux-*/symvers; do
+          printf '%s\n' "${path#openwrt/}" >> "$paths"
+        done
+        sudo tar -C openwrt -cf - -T "$paths" |
+          zstd -T0 -1 -o "$RUNNER_TEMP/package-checkpoint.tar.zst"
+
     - name: Upload queue checkpoint artifact
       uses: actions/upload-artifact@v4.6.2
       if: always() && steps.compile.outcome != 'skipped'
       with:
         name: package-checkpoint
-        path: |
-          openwrt/staging_dir
-          openwrt/bin
-          openwrt/build-state
-          openwrt/build_dir/target-*/linux-*/symvers
+        path: ${{ runner.temp }}/package-checkpoint.tar.zst
         if-no-files-found: error
         compression-level: 0
         retention-days: 2

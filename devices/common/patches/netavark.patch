@@ -1,0 +1,9 @@
+--- a/feeds/packages/net/netavark/Makefile
++++ b/feeds/packages/net/netavark/Makefile
+@@ -43,4 +43,6 @@ define Package/netavark/install
+ endef
+
++Build/Compile=$(call Build/Compile/Cargo,,--locked)
++
+ $(eval $(call RustBinPackage,netavark))
+ $(eval $(call BuildPackage,netavark))

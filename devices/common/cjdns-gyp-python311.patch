@@ -1,0 +1,9 @@
+--- a/node_build/dependencies/libuv/build/gyp/pylib/gyp/common.py
++++ b/node_build/dependencies/libuv/build/gyp/pylib/gyp/common.py
+@@ -7,0 +8,6 @@
++try:
++  from collections import abc as collections_abc
++  collections.MutableSet = collections_abc.MutableSet
++  collections.Iterable = collections_abc.Iterable
++except ImportError:
++  pass

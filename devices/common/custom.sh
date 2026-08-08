@@ -23,6 +23,12 @@ fi
 
 ./scripts/feeds update -a
 
+cjdns_makefile="feeds/routing/cjdns/Makefile"
+cjdns_patch="feeds/routing/cjdns/patches/040-gyp-python_310.patch"
+grep -qx 'PKG_RELEASE:=6' "$cjdns_makefile"
+sed -i 's/^PKG_RELEASE:=6$/PKG_RELEASE:=7/' "$cjdns_makefile"
+install -m0644 devices/common/cjdns-gyp-python311.patch "$cjdns_patch"
+
 rm -rf feeds/kiddin9/{diy,mt-drivers,shortcut-fe,luci-app-mtwifi,base-files,luci-app-package-manager,\
 dnsmasq,firewall*,wifi-scripts,opkg,ppp,curl,luci-app-firewall,\
 nftables,fstools,wireless-regdb,libnftnl}

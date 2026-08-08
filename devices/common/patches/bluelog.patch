@@ -1,0 +1,7 @@
+--- a/feeds/packages/utils/bluelog/Makefile
++++ b/feeds/packages/utils/bluelog/Makefile
+@@ -12 +12 @@
+-PKG_RELEASE:=5
++PKG_RELEASE:=6
+@@ -75,0 +76 @@
++	 TARGET="" \

@@ -35,6 +35,13 @@ grep -qx 'PKG_RELEASE:=3' "$alpine_makefile"
 sed -i 's/^PKG_RELEASE:=3$/PKG_RELEASE:=4/' "$alpine_makefile"
 install -m0644 devices/common/alpine-c-client-compiler.patch "$alpine_patch"
 
+arp_whisper_makefile="feeds/packages/utils/arp-whisper/Makefile"
+arp_whisper_patch="feeds/packages/utils/arp-whisper/patches/010-time-rust-1.80.patch"
+grep -qx 'PKG_RELEASE:=1' "$arp_whisper_makefile"
+sed -i 's/^PKG_RELEASE:=1$/PKG_RELEASE:=2/' "$arp_whisper_makefile"
+install -d "${arp_whisper_patch%/*}"
+install -m0644 devices/common/arp-whisper-time.patch "$arp_whisper_patch"
+
 rm -rf feeds/kiddin9/{diy,mt-drivers,shortcut-fe,luci-app-mtwifi,base-files,luci-app-package-manager,\
 dnsmasq,firewall*,wifi-scripts,opkg,ppp,curl,luci-app-firewall,\
 nftables,fstools,wireless-regdb,libnftnl}

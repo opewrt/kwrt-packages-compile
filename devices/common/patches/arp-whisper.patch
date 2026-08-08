@@ -1,0 +1,9 @@
+--- a/feeds/packages/utils/arp-whisper/Makefile
++++ b/feeds/packages/utils/arp-whisper/Makefile
+@@ -51,4 +51,6 @@ define Package/arp-whisper/install
+ endef
+
++Build/Compile=$(call Build/Compile/Cargo,,--locked)
++
+ $(eval $(call RustBinPackage,arp-whisper))
+ $(eval $(call BuildPackage,arp-whisper))

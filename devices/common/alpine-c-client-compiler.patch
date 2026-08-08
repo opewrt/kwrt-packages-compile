@@ -1,0 +1,5 @@
+--- a/imap/Makefile
++++ b/imap/Makefile
+@@ -709 +709 @@ rebuild:
+-	$(CD) c-client;$(MAKE) all CC=`$(CAT) CCTYPE` \
++	$(CD) c-client;$(MAKE) all CC="`$(CAT) CCTYPE`" \

@@ -29,6 +29,12 @@ grep -qx 'PKG_RELEASE:=6' "$cjdns_makefile"
 sed -i 's/^PKG_RELEASE:=6$/PKG_RELEASE:=7/' "$cjdns_makefile"
 install -m0644 devices/common/cjdns-gyp-python311.patch "$cjdns_patch"
 
+alpine_makefile="feeds/packages/mail/alpine/Makefile"
+alpine_patch="feeds/packages/mail/alpine/patches/030-c-client-compiler.patch"
+grep -qx 'PKG_RELEASE:=3' "$alpine_makefile"
+sed -i 's/^PKG_RELEASE:=3$/PKG_RELEASE:=4/' "$alpine_makefile"
+install -m0644 devices/common/alpine-c-client-compiler.patch "$alpine_patch"
+
 rm -rf feeds/kiddin9/{diy,mt-drivers,shortcut-fe,luci-app-mtwifi,base-files,luci-app-package-manager,\
 dnsmasq,firewall*,wifi-scripts,opkg,ppp,curl,luci-app-firewall,\
 nftables,fstools,wireless-regdb,libnftnl}

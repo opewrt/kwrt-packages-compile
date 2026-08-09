@@ -1,0 +1,10 @@
+--- a/feeds/packages/net/prosody/Makefile
++++ b/feeds/packages/net/prosody/Makefile
+@@ -12 +12 @@
+-PKG_RELEASE:=1
++PKG_RELEASE:=2
+@@ -51 +51,3 @@
+-MAKE_FLAGS += LD="$(TARGET_CC)"
++MAKE_FLAGS += \
++	LD="$(TARGET_CC)" \
++	TARGET="../util/"

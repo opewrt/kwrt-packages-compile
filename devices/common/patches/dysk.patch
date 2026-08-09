@@ -1,0 +1,5 @@
+--- a/feeds/packages/utils/dysk/Makefile
++++ b/feeds/packages/utils/dysk/Makefile
+@@ -38,0 +39,2 @@ define Package/dysk/description
++Build/Compile=$(call Build/Compile/Cargo,,--locked)
++

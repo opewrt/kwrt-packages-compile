@@ -1,0 +1,5 @@
+--- a/feeds/packages/net/yggdrasil-jumper/Makefile
++++ b/feeds/packages/net/yggdrasil-jumper/Makefile
+@@ -36,0 +37,2 @@ define Package/yggdrasil-jumper/description
++Build/Compile=$(call Build/Compile/Cargo,,--locked)
++

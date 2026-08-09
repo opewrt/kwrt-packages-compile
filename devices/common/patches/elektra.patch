@@ -1,0 +1,8 @@
+--- a/feeds/packages/libs/elektra/Makefile
++++ b/feeds/packages/libs/elektra/Makefile
+@@ -18 +18 @@
+-PKG_RELEASE:=1
++PKG_RELEASE:=2
+@@ -314 +314 @@
+-	-DBINDINGS="MAINTAINED;-intercept_env;-intercept_fs;-io_glib"
++	-DBINDINGS="MAINTAINED;-intercept_env;-intercept_fs;-io_glib;-jna"

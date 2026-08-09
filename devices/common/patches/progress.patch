@@ -1,0 +1,8 @@
+--- a/feeds/packages/utils/progress/Makefile
++++ b/feeds/packages/utils/progress/Makefile
+@@ -12 +12 @@
+-PKG_RELEASE:=1
++PKG_RELEASE:=2
+@@ -52 +52 @@ define Package/progress/install
+-	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/local/bin/progress $(1)/usr/bin/
++	$(INSTALL_BIN) $(PKG_BUILD_DIR)/progress $(1)/usr/bin/

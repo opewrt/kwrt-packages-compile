@@ -1,0 +1,5 @@
+--- a/feeds/packages/utils/lsd/Makefile
++++ b/feeds/packages/utils/lsd/Makefile
+@@ -37,0 +38,2 @@ define Package/lsd/install
++Build/Compile=$(call Build/Compile/Cargo,,--locked)
++

@@ -1,0 +1,5 @@
+--- a/feeds/packages/net/gping/Makefile
++++ b/feeds/packages/net/gping/Makefile
+@@ -40 +40 @@
+-Build/Compile = $(call Build/Compile/Cargo,gping)
++Build/Compile = $(call Build/Compile/Cargo,gping,--locked)

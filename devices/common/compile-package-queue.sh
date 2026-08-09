@@ -214,6 +214,10 @@ run_make() {
 	return "$status"
 }
 
+ovn_openvswitch_ready() {
+	find build_dir -type f -path '*/linux-*/openvswitch-*/.built*' -print -quit 2>/dev/null | grep -q .
+}
+
 prepare_ovn_openvswitch() {
 	local unit_id="$1"
 	local log_file="$2"
@@ -221,17 +225,23 @@ prepare_ovn_openvswitch() {
 	local target status
 	for target in "$@"; do
 		[ "$target" = "package/feeds/packages/ovn/compile" ] || continue
-		if find build_dir/target-*/linux-* -maxdepth 1 -type d -name 'openvswitch-*' -print -quit 2>/dev/null | grep -q .; then
-			return 0
-		fi
+		ovn_openvswitch_ready && return 0
 		echo "compile Open vSwitch prerequisite for $unit_id"
 		run_make "$unit_id" "$jobs" "$log_file" no-deps false package/feeds/packages/openvswitch/compile
 		status=$?
+		if [ "$status" -ne 75 ] && ovn_openvswitch_ready; then
+			echo "Open vSwitch build tree is ready for $unit_id"
+			return 0
+		fi
 		if [ "$status" -ne 0 ] && [ "$status" -ne 75 ]; then
 			echo "retry Open vSwitch prerequisite for $unit_id with -j1 V=s"
 			printf '\n[%s] retry Open vSwitch prerequisite with -j1 V=s\n' "$(date -Iseconds)" >> "$log_file"
 			run_make "$unit_id" 1 "$log_file" no-deps true package/feeds/packages/openvswitch/compile
 			status=$?
+			if [ "$status" -ne 75 ] && ovn_openvswitch_ready; then
+				echo "Open vSwitch build tree is ready for $unit_id"
+				return 0
+			fi
 		fi
 		return "$status"
 	done

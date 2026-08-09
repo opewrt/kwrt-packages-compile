@@ -1,0 +1,8 @@
+--- a/feeds/packages/net/tcpreplay/Makefile
++++ b/feeds/packages/net/tcpreplay/Makefile
+@@ -12 +12 @@
+-PKG_RELEASE:=1
++PKG_RELEASE:=2
+@@ -38 +38 @@ define Package/tcpreplay/default
+-  DEPENDS:=+librt +libpcap +libdnet +USE_MUSL:musl-fts
++  DEPENDS:=+librt +libpcap +libdnet +libbpf +USE_MUSL:musl-fts

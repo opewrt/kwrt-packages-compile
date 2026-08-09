@@ -1,0 +1,5 @@
+--- a/feeds/packages/utils/procs/Makefile
++++ b/feeds/packages/utils/procs/Makefile
+@@ -52,0 +53,2 @@ define Package/procs/install
++Build/Compile=$(call Build/Compile/Cargo,,--locked)
++

@@ -42,6 +42,13 @@ sed -i 's/^PKG_RELEASE:=1$/PKG_RELEASE:=2/' "$arp_whisper_makefile"
 install -d "${arp_whisper_patch%/*}"
 install -m0644 devices/common/arp-whisper-time.patch "$arp_whisper_patch"
 
+rpcsvc_proto_makefile="feeds/packages/libs/rpcsvc-proto/Makefile"
+rpcsvc_proto_patch="feeds/packages/libs/rpcsvc-proto/patches/010-stat-portability.patch"
+grep -qx 'PKG_RELEASE:=2' "$rpcsvc_proto_makefile"
+sed -i 's/^PKG_RELEASE:=2$/PKG_RELEASE:=3/' "$rpcsvc_proto_makefile"
+install -d "${rpcsvc_proto_patch%/*}"
+install -m0644 devices/common/rpcsvc-proto-stat.patch "$rpcsvc_proto_patch"
+
 rm -rf feeds/kiddin9/{diy,mt-drivers,shortcut-fe,luci-app-mtwifi,base-files,luci-app-package-manager,\
 dnsmasq,firewall*,wifi-scripts,opkg,ppp,curl,luci-app-firewall,\
 nftables,fstools,wireless-regdb,libnftnl}

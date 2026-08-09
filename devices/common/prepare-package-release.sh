@@ -87,7 +87,47 @@ rm -rf "$release_dir/release-assets"
 
 asset_dir="$release_dir/release-assets"
 mkdir -p "$asset_dir"
-tar --use-compress-program="zstd -T0 -6" -cf "$asset_dir/packages-${package_arch}.tar.zst" -C "$release_dir" packages
+package_asset_limit="${PACKAGE_ASSET_LIMIT:-$((1800 * 1024 * 1024))}"
+if ! [[ "$package_asset_limit" =~ ^[1-9][0-9]*$ ]]; then
+	echo "Invalid package asset size limit: $package_asset_limit" >&2
+	exit 1
+fi
+mapfile -d '' package_files < <(cd "$release_dir" && find packages \( -type f -o -type l \) -print0 | sort -z)
+package_total_size=0
+for package_file in "${package_files[@]}"; do
+	package_total_size=$((package_total_size + $(stat -c %s "$release_dir/$package_file")))
+done
+if [ "$package_total_size" -le "$package_asset_limit" ]; then
+	tar --use-compress-program="zstd -T0 -6" -cf "$asset_dir/packages-${package_arch}.tar.zst" -C "$release_dir" packages
+else
+	part_number=1
+	part_size=0
+	part_list="$asset_dir/.packages-part"
+	: > "$part_list"
+	for package_file in "${package_files[@]}"; do
+		package_file_size="$(stat -c %s "$release_dir/$package_file")"
+		if [ "$part_size" -gt 0 ] && [ $((part_size + package_file_size)) -gt "$package_asset_limit" ]; then
+			printf -v part_asset 'packages-%s.part-%03d.tar.zst' "$package_arch" "$part_number"
+			tar --null --use-compress-program="zstd -T0 -6" -cf "$asset_dir/$part_asset" -C "$release_dir" -T "$part_list"
+			part_number=$((part_number + 1))
+			part_size=0
+			: > "$part_list"
+		fi
+		printf '%s\0' "$package_file" >> "$part_list"
+		part_size=$((part_size + package_file_size))
+	done
+	if [ "$part_size" -gt 0 ]; then
+		printf -v part_asset 'packages-%s.part-%03d.tar.zst' "$package_arch" "$part_number"
+		tar --null --use-compress-program="zstd -T0 -6" -cf "$asset_dir/$part_asset" -C "$release_dir" -T "$part_list"
+	fi
+	rm -f "$part_list"
+fi
+while IFS= read -r package_asset; do
+	if [ "$(stat -c %s "$package_asset")" -ge 2147483648 ]; then
+		echo "Package release asset exceeds the GitHub 2 GiB limit: ${package_asset##*/}" >&2
+		exit 1
+	fi
+done < <(find "$asset_dir" -maxdepth 1 -type f -name "packages-${package_arch}*.tar.zst" | sort)
 if find "$release_dir/build-logs" -type f -print -quit 2>/dev/null | grep -q .; then
 	tar --use-compress-program="zstd -T0 -6" -cf "$asset_dir/build-logs.tar.zst" -C "$release_dir" build-logs
 fi

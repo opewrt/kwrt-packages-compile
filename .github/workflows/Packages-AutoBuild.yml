@@ -291,7 +291,9 @@ jobs:
 
     - name: Prepare cache directories
       run: |
-        sudo mkdir -p -m 777 /mnt/openwrt/dl /mnt/openwrt/ccache
+        sudo mkdir -p /mnt/openwrt/dl /mnt/openwrt/ccache
+        sudo chown "$USER:$(id -gn)" /mnt/openwrt/dl /mnt/openwrt/ccache
+        chmod 755 /mnt/openwrt/dl /mnt/openwrt/ccache
         mkdir -p "$GITHUB_WORKSPACE/.cache/sdk"
 
     - name: Cache Kwrt SDK
@@ -447,7 +449,9 @@ jobs:
           llvm python3-pyelftools libpython3-dev aria2 jq qemu-utils rename \
           libelf-dev libgmp3-dev libmpc-dev libfuse-dev bc
         sudo -E apt-get -qq clean
-        sudo mkdir -p -m 777 /mnt/openwrt/dl /mnt/openwrt/ccache
+        sudo mkdir -p /mnt/openwrt/dl /mnt/openwrt/ccache
+        sudo chown "$USER:$(id -gn)" /mnt/openwrt/dl /mnt/openwrt/ccache
+        chmod 755 /mnt/openwrt/dl /mnt/openwrt/ccache
 
     - name: Download package build plan
       uses: actions/download-artifact@v4.3.0
@@ -509,32 +513,6 @@ jobs:
         test -f "$checkpoint"
         tar --zstd -xf "$checkpoint" -C openwrt
 
-    - name: Restore queue checkpoint
-      id: checkpoint
-      uses: actions/cache/restore@v4
-      if: env.NOCACHE != 'true' && env.CHECKPOINT_RUN_ID == ''
-      with:
-        path: |
-          openwrt/staging_dir
-          openwrt/bin
-          openwrt/build-state
-          openwrt/build_dir/target-*/linux-*/symvers
-        key: kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: |
-          kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-
-
-    - name: Restore legacy queue checkpoint
-      uses: actions/cache/restore@v4
-      if: env.NOCACHE != 'true' && env.CHECKPOINT_RUN_ID == '' && steps.checkpoint.outputs.cache-matched-key == '' && env.RESUME_BUILD_IDENTITY != env.BUILD_IDENTITY
-      with:
-        path: |
-          openwrt/staging_dir
-          openwrt/bin
-          openwrt/build-state
-        key: kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
-        restore-keys: |
-          kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.RESUME_BUILD_IDENTITY }}-
-
     - name: Compile dependency queue
       id: compile
       continue-on-error: true
@@ -577,17 +555,6 @@ jobs:
         path: /mnt/openwrt/dl
         key: kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
 
-    - name: Save queue checkpoint
-      uses: actions/cache/save@v4
-      if: always() && steps.compile.outcome != 'skipped' && env.NOCACHE != 'true'
-      with:
-        path: |
-          openwrt/staging_dir
-          openwrt/bin
-          openwrt/build-state
-          openwrt/build_dir/target-*/linux-*/symvers
-        key: kwrt-packages-state-${{ runner.os }}-${{ env.TARGET }}-${{ env.SDK_TAG }}-${{ env.BUILD_IDENTITY }}-${{ github.run_id }}-${{ github.run_attempt }}
-
     - name: Package queue checkpoint artifact
       if: always() && steps.compile.outcome != 'skipped'
       run: |
@@ -612,7 +579,7 @@ jobs:
         retention-days: 2
 
     - name: Prepare cumulative result
-      if: always() && steps.compile.outcome != 'skipped'
+      if: steps.compile.outcome == 'success' && steps.compile.outputs.queue_status == 'complete'
       run: |
         set -euo pipefail
         artifact="$GITHUB_WORKSPACE/package-stage"
@@ -642,7 +609,7 @@ jobs:
 
     - name: Upload cumulative result and logs
       uses: actions/upload-artifact@v4.6.2
-      if: always() && steps.compile.outcome != 'skipped'
+      if: steps.compile.outcome == 'success' && steps.compile.outputs.queue_status == 'complete'
       with:
         name: package-stage-sequential
         path: package-stage

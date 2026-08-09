@@ -75,6 +75,25 @@ requeue_missing_mac80211_symvers() {
 
 requeue_missing_mac80211_symvers
 
+requeue_missing_ovn_openvswitch() {
+	local producer_unit consumer_unit
+	producer_unit="$(awk -F '\t' '$4 ~ /\/openvswitch\/compile$/ { print $1; exit }' "$queue_file")"
+	consumer_unit="$(awk -F '\t' '$4 ~ /\/ovn\/compile$/ { print $1; exit }' "$queue_file")"
+	[ -n "$producer_unit" ] && [ -n "$consumer_unit" ] || return 0
+	grep -Fqx -- "$producer_unit" "$completed_file" || return 0
+	if grep -Fqx -- "$consumer_unit" "$completed_file"; then
+		return 0
+	fi
+	if find build_dir/target-*/linux-* -maxdepth 1 -type d -name 'openvswitch-*' -print -quit 2>/dev/null | grep -q .; then
+		return 0
+	fi
+	awk -v unit="$producer_unit" '$0 != unit' "$completed_file" > "$completed_file.tmp"
+	mv "$completed_file.tmp" "$completed_file"
+	echo "requeue $producer_unit to restore the Open vSwitch build tree before $consumer_unit"
+}
+
+requeue_missing_ovn_openvswitch
+
 terminate_active() {
 	if [ -n "$active_pid" ] && kill -0 -- "-$active_pid" 2>/dev/null; then
 		kill -TERM -- "-$active_pid" 2>/dev/null || true

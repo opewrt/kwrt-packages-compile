@@ -1,0 +1,8 @@
+--- a/Makefile.hdhomerun
++++ b/Makefile.hdhomerun
+@@ -35 +35 @@
+-LIBHDHR         = libhdhomerun_20210624
++LIBHDHR         = libhdhomerun_20250815
+@@ -38 +38 @@
+-LIBHDHR_SHA1    = 9db6089b956de4e58084b623937f5fc3231fff0b
++LIBHDHR_SHA1    = 5de17a094030e6fcdab80bbcb2777596895fb79e

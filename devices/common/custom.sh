@@ -49,6 +49,12 @@ sed -i 's/^PKG_RELEASE:=2$/PKG_RELEASE:=3/' "$rpcsvc_proto_makefile"
 install -d "${rpcsvc_proto_patch%/*}"
 install -m0644 devices/common/rpcsvc-proto-stat.patch "$rpcsvc_proto_patch"
 
+tvheadend_makefile="feeds/packages/multimedia/tvheadend/Makefile"
+tvheadend_patch="feeds/packages/multimedia/tvheadend/patches/060-hdhomerun-20250815.patch"
+grep -qx 'PKG_RELEASE:=1' "$tvheadend_makefile"
+sed -i 's/^PKG_RELEASE:=1$/PKG_RELEASE:=2/' "$tvheadend_makefile"
+install -m0644 devices/common/tvheadend-hdhomerun.patch "$tvheadend_patch"
+
 rm -rf feeds/kiddin9/{diy,mt-drivers,shortcut-fe,luci-app-mtwifi,base-files,luci-app-package-manager,\
 dnsmasq,firewall*,wifi-scripts,opkg,ppp,curl,luci-app-firewall,\
 nftables,fstools,wireless-regdb,libnftnl}

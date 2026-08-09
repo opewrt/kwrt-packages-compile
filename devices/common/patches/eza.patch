@@ -1,0 +1,5 @@
+--- a/feeds/packages/utils/eza/Makefile
++++ b/feeds/packages/utils/eza/Makefile
+@@ -43,0 +44,2 @@ define Package/eza/install
++Build/Compile=$(call Build/Compile/Cargo,,--locked)
++

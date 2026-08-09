@@ -75,25 +75,6 @@ requeue_missing_mac80211_symvers() {
 
 requeue_missing_mac80211_symvers
 
-requeue_missing_ovn_openvswitch() {
-	local producer_unit consumer_unit
-	producer_unit="$(awk -F '\t' '$4 ~ /\/openvswitch\/compile$/ { print $1; exit }' "$queue_file")"
-	consumer_unit="$(awk -F '\t' '$4 ~ /\/ovn\/compile$/ { print $1; exit }' "$queue_file")"
-	[ -n "$producer_unit" ] && [ -n "$consumer_unit" ] || return 0
-	grep -Fqx -- "$producer_unit" "$completed_file" || return 0
-	if grep -Fqx -- "$consumer_unit" "$completed_file"; then
-		return 0
-	fi
-	if find build_dir/target-*/linux-* -maxdepth 1 -type d -name 'openvswitch-*' -print -quit 2>/dev/null | grep -q .; then
-		return 0
-	fi
-	awk -v unit="$producer_unit" '$0 != unit' "$completed_file" > "$completed_file.tmp"
-	mv "$completed_file.tmp" "$completed_file"
-	echo "requeue $producer_unit to restore the Open vSwitch build tree before $consumer_unit"
-}
-
-requeue_missing_ovn_openvswitch
-
 terminate_active() {
 	if [ -n "$active_pid" ] && kill -0 -- "-$active_pid" 2>/dev/null; then
 		kill -TERM -- "-$active_pid" 2>/dev/null || true
@@ -233,6 +214,30 @@ run_make() {
 	return "$status"
 }
 
+prepare_ovn_openvswitch() {
+	local unit_id="$1"
+	local log_file="$2"
+	shift 2
+	local target status
+	for target in "$@"; do
+		[ "$target" = "package/feeds/packages/ovn/compile" ] || continue
+		if find build_dir/target-*/linux-* -maxdepth 1 -type d -name 'openvswitch-*' -print -quit 2>/dev/null | grep -q .; then
+			return 0
+		fi
+		echo "compile Open vSwitch prerequisite for $unit_id"
+		run_make "$unit_id" "$jobs" "$log_file" no-deps false package/feeds/packages/openvswitch/compile
+		status=$?
+		if [ "$status" -ne 0 ] && [ "$status" -ne 75 ]; then
+			echo "retry Open vSwitch prerequisite for $unit_id with -j1 V=s"
+			printf '\n[%s] retry Open vSwitch prerequisite with -j1 V=s\n' "$(date -Iseconds)" >> "$log_file"
+			run_make "$unit_id" 1 "$log_file" no-deps true package/feeds/packages/openvswitch/compile
+			status=$?
+		fi
+		return "$status"
+	done
+	return 0
+}
+
 record_failure() {
 	local unit_id="$1"
 	local log_name="$2"
@@ -281,24 +286,23 @@ process_unit() {
 	log_name="${unit_id}_${phase}.log"
 	log_file="$logs_dir/$log_name"
 	: > "$log_file"
-	echo "compile $unit_id phase=$phase targets=${#targets[@]} mode=$dependency_mode elapsed=${elapsed}s"
-	run_make "$unit_id" "$jobs" "$log_file" "$dependency_mode" false "${targets[@]}"
+	prepare_ovn_openvswitch "$unit_id" "$log_file" "${targets[@]}"
 	status=$?
+	if [ "$status" -eq 0 ]; then
+		echo "compile $unit_id phase=$phase targets=${#targets[@]} mode=$dependency_mode elapsed=${elapsed}s"
+		run_make "$unit_id" "$jobs" "$log_file" "$dependency_mode" false "${targets[@]}"
+		status=$?
+		if [ "$status" -ne 0 ] && [ "$status" -ne 75 ]; then
+			echo "retry $unit_id with -j1 V=s"
+			printf '\n[%s] retry with -j1 V=s\n' "$(date -Iseconds)" >> "$log_file"
+			run_make "$unit_id" 1 "$log_file" "$dependency_mode" true "${targets[@]}"
+			status=$?
+		fi
+	fi
 	if [ "$status" -eq 75 ]; then
 		refresh_results
 		write_state paused "$unit_id"
 		return 75
-	fi
-	if [ "$status" -ne 0 ]; then
-		echo "retry $unit_id with -j1 V=s"
-		printf '\n[%s] retry with -j1 V=s\n' "$(date -Iseconds)" >> "$log_file"
-		run_make "$unit_id" 1 "$log_file" "$dependency_mode" true "${targets[@]}"
-		status=$?
-		if [ "$status" -eq 75 ]; then
-			refresh_results
-			write_state paused "$unit_id"
-			return 75
-		fi
 	fi
 	if [ "$status" -ne 0 ]; then
 		echo "queue unit $unit_id failed; see $log_file" >&2

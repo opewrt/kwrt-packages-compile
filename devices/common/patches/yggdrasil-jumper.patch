@@ -1,5 +1,11 @@
 --- a/feeds/packages/net/yggdrasil-jumper/Makefile
 +++ b/feeds/packages/net/yggdrasil-jumper/Makefile
-@@ -36,0 +37,2 @@ define Package/yggdrasil-jumper/description
-+Build/Compile=$(call Build/Compile/Cargo,,--locked)
+@@ -34,6 +34,8 @@ define Package/yggdrasil-jumper/description
+   automatically establishes direct peerings over internet with remote nodes
+   running Yggdrasil-Jumper without requiring any firewall configuration or
+   port mapping.
+ endef
 +
++Build/Compile=$(call Build/Compile/Cargo,,--locked)
+
+ define Package/yggdrasil-jumper/install

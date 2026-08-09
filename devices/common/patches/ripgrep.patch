@@ -1,0 +1,5 @@
+--- a/feeds/packages/utils/ripgrep/Makefile
++++ b/feeds/packages/utils/ripgrep/Makefile
+@@ -44,0 +45,2 @@ define Package/ripgrep/description
++Build/Compile=$(call Build/Compile/Cargo,,--locked)
++

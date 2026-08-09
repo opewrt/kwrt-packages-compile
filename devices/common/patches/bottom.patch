@@ -1,5 +1,5 @@
 --- a/feeds/packages/admin/bottom/Makefile
 +++ b/feeds/packages/admin/bottom/Makefile
-@@ -35,0 +36,2 @@ define Package/bottom/description
+@@ -36,0 +37,2 @@ define Package/bottom/description
 +Build/Compile=$(call Build/Compile/Cargo,,--locked)
 +

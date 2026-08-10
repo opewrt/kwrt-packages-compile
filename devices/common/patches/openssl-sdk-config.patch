@@ -1,0 +1,32 @@
+--- a/Config-build.in
++++ b/Config-build.in
+@@ -15807,29 +15807,17 @@
+ 	default y
+
+ config OPENSSL_ENGINE_BUILTIN
+ 	bool
+ 	default n
+
+-config PACKAGE_libopenssl-afalg
+-	tristate
+-	default m
+-
+ config PACKAGE_libopenssl-conf
+ 	tristate
+ 	default m
+
+-config PACKAGE_libopenssl-devcrypto
+-	tristate
+-	default m
+-
+ config PACKAGE_libopenssl-legacy
+-	tristate
+-	default m
+-
+-config PACKAGE_libopenssl-padlock
+ 	tristate
+ 	default m
+
+ config PACKAGE_libwolfssl
+ 	tristate
+ 	default m

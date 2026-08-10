@@ -1,0 +1,7 @@
+--- a/feeds/kiddin9/naiveproxy/Makefile
++++ b/feeds/kiddin9/naiveproxy/Makefile
+@@ -69,3 +69,3 @@ else ifeq ($(ARCH_PREBUILT),x86_64)
+-else
++else ifneq ($(ARCH_PREBUILT),)
+   $(error naiveproxy: unsupported ARCH_PREBUILT=$(ARCH_PREBUILT))
+ endif

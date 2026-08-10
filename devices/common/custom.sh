@@ -87,7 +87,6 @@ if [ "${#kiddin9_makefiles[@]}" -gt 0 ]; then
 fi
 
 cp -f devices/common/.config .config
-make defconfig
 
 for defaults_file in package/feeds/*/luci-theme*/root/etc/uci-defaults/*; do
 	[ -f "$defaults_file" ] || continue

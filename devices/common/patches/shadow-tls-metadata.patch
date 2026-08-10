@@ -1,0 +1,6 @@
+--- a/feeds/kiddin9/shadow-tls/Makefile
++++ b/feeds/kiddin9/shadow-tls/Makefile
+@@ -39 +39,3 @@ endef
++ifneq ($(RELEASE_ARCH),)
+ $(eval $(call Download,shadow-tls))
++endif

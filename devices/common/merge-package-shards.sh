@@ -75,6 +75,10 @@ for stage_dir in "${stage_dirs[@]}"; do
 		while IFS= read -r -d '' ipk; do
 			relative_path="${ipk#"$stage_dir/ipk/"}"
 			ipk_name="${ipk##*/}"
+			if [ "$ipk_name" = "__.ipk" ]; then
+				echo "Ignoring malformed IPK with empty package metadata: $relative_path" >&2
+				continue
+			fi
 			ipk_sha256="$(sha256sum "$ipk" | cut -d ' ' -f 1)"
 			if [ -n "${ipk_hashes[$ipk_name]:-}" ] && [ "${ipk_hashes[$ipk_name]}" != "$ipk_sha256" ]; then
 				echo "Conflicting IPK files named $ipk_name" >&2

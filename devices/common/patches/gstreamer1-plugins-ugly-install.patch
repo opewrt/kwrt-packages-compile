@@ -1,0 +1,13 @@
+--- a/feeds/packages/multimedia/gst1-plugins-ugly/Makefile
++++ b/feeds/packages/multimedia/gst1-plugins-ugly/Makefile
+@@ -112,6 +112,10 @@ MESON_ARGS += \
+ 	-Dglib-checks=disabled \
+ 	-Ddoc=disabled
+
++define Package/gstreamer1-plugins-ugly/install
++	/bin/true
++endef
++
+ define Package/gst1-plugins-ugly/install
+ 	/bin/true
+ endef

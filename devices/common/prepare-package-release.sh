@@ -14,7 +14,7 @@ fi
 openwrt_dir="$(cd "$openwrt_dir" && pwd)"
 metadata_dir="$(cd "$metadata_dir" && pwd)"
 rm -rf "$release_dir"
-mkdir -p "$release_dir/packages/$package_arch" "$release_dir/release-assets"
+mkdir -p "$release_dir/packages/$package_arch" "$release_dir/targets" "$release_dir/release-assets"
 
 if [ -d "$openwrt_dir/bin/packages/$package_arch" ]; then
 	while read -r feed_name; do
@@ -25,13 +25,16 @@ if [ -d "$openwrt_dir/bin/packages/$package_arch" ]; then
 		cp -a "$feed_dir/." "$release_dir/packages/$package_arch/$feed_name/"
 	done < "$openwrt_dir/.managed-feeds"
 fi
+if [ -d "$openwrt_dir/bin/targets" ]; then
+	cp -a "$openwrt_dir/bin/targets/." "$release_dir/targets/"
+fi
 
-if find "$release_dir/packages" -type f \( -name 'kernel_*.ipk' -o -name 'kmod-*.ipk' \) -print -quit | grep -q .; then
+if find "$release_dir/packages" "$release_dir/targets" -type f \( -name 'kernel_*.ipk' -o -name 'kmod-*.ipk' \) -print -quit | grep -q .; then
 	echo "Package Release must not contain kernel or kmod IPKs" >&2
 	exit 1
 fi
 
-if ! find "$release_dir/packages" -type f -name '*.ipk' -print -quit | grep -q .; then
+if ! find "$release_dir/packages" "$release_dir/targets" -type f -name '*.ipk' -print -quit | grep -q .; then
 	if [ "${REQUIRE_IPK:-true}" = "true" ]; then
 		echo "No compiled IPK files were found" >&2
 		exit 1
@@ -45,6 +48,7 @@ cp -f "$openwrt_dir/.config" "$release_dir/package.config" 2>/dev/null || true
 cp -f "$openwrt_dir/.managed-feeds" "$release_dir/MANAGED-FEEDS.txt" 2>/dev/null || true
 cp -f "$openwrt_dir/feeds.conf" "$release_dir/feeds.conf"
 cp -f "$openwrt_dir/BUILD-IDENTITY" "$release_dir/BUILD-IDENTITY"
+cp -f "$openwrt_dir/UNIT-PACKAGES.tsv" "$release_dir/UNIT-PACKAGES.tsv"
 for source_report in SOURCE-AUDIT.tsv SOURCE-AUDIT.json SOURCE-AUDIT-SUMMARY.txt SOURCE-MANIFEST.tsv; do
 	cp -f "$openwrt_dir/$source_report" "$release_dir/$source_report"
 done
@@ -122,12 +126,15 @@ else
 	fi
 	rm -f "$part_list"
 fi
+if find "$release_dir/targets" -type f -name '*.ipk' -print -quit | grep -q .; then
+	tar --use-compress-program="zstd -T0 -6" -cf "$asset_dir/targets-${package_arch}.tar.zst" -C "$release_dir" targets
+fi
 while IFS= read -r package_asset; do
 	if [ "$(stat -c %s "$package_asset")" -ge 2147483648 ]; then
 		echo "Package release asset exceeds the GitHub 2 GiB limit: ${package_asset##*/}" >&2
 		exit 1
 	fi
-done < <(find "$asset_dir" -maxdepth 1 -type f -name "packages-${package_arch}*.tar.zst" | sort)
+done < <(find "$asset_dir" -maxdepth 1 -type f \( -name "packages-${package_arch}*.tar.zst" -o -name "targets-${package_arch}.tar.zst" \) | sort)
 if find "$release_dir/build-logs" -type f -print -quit 2>/dev/null | grep -q .; then
 	tar --use-compress-program="zstd -T0 -6" -cf "$asset_dir/build-logs.tar.zst" -C "$release_dir" build-logs
 fi
@@ -148,6 +155,7 @@ for file in \
 	MANAGED-FEEDS.txt \
 	feeds.conf \
 	BUILD-IDENTITY \
+	UNIT-PACKAGES.tsv \
 	SOURCE-AUDIT.tsv \
 	SOURCE-AUDIT.json \
 	SOURCE-AUDIT-SUMMARY.txt \

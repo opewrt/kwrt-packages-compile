@@ -1,0 +1,13 @@
+--- a/feeds/packages/multimedia/gst1-plugins-good/Makefile
++++ b/feeds/packages/multimedia/gst1-plugins-good/Makefile
+@@ -180,6 +180,10 @@ MESON_ARGS += \
+ 	-Dglib-checks=disabled \
+ 	-Ddoc=disabled
+
++define Package/gstreamer1-plugins-good/install
++	/bin/true
++endef
++
+ define Package/gst1-plugins-good/install
+ 	/bin/true
+ endef

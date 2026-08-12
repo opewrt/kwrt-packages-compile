@@ -1,0 +1,11 @@
+--- a/feeds/packages/libs/gnu-efi/Makefile
++++ b/feeds/packages/libs/gnu-efi/Makefile
+@@ -61,7 +61,7 @@ define Package/gnu-efi/install
+ 	$(INSTALL_DATA) $(PKG_INSTALL_DIR)/usr/local/lib/{crt0-efi-*.o,elf_*.lds,libefi.a,libgnuefi.a} $(1)/usr/lib/
+ endef
+
+-define gnu-efi-programs/install
++define Package/gnu-efi-programs/install
+ 	$(INSTALL_DIR) $(1)/usr/share/gnuefi/apps
+ 	$(INSTALL_BIN) $(PKG_INSTALL_DIR)/usr/local/lib/gnuefi/apps/*.efi $(1)/usr/share/gnuefi/apps/
+ endef

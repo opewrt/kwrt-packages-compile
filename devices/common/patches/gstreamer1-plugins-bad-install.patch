@@ -1,0 +1,13 @@
+--- a/feeds/packages/multimedia/gst1-plugins-bad/Makefile
++++ b/feeds/packages/multimedia/gst1-plugins-bad/Makefile
+@@ -264,6 +264,10 @@ MESON_ARGS += \
+ 	-Dextra-checks=disabled \
+ 	-Ddoc=disabled
+
++define Package/gstreamer1-plugins-bad/install
++	/bin/true
++endef
++
+ define Package/gst1-plugins-bad/install
+ 	/bin/true
+ endef

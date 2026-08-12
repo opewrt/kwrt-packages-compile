@@ -1,0 +1,16 @@
+--- a/feeds/packages/libs/libulfius/Makefile
++++ b/feeds/packages/libs/libulfius/Makefile
+@@ -60,5 +60,13 @@ else
+ 	CMAKE_OPTIONS += -DWITH_GNUTLS=OFF
+ endif
+
++define Package/libulfius/install
++	$(INSTALL_DIR) $(1)/usr/lib
++	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libulfius.so* $(1)/usr/lib/
++endef
++
++Package/libulfius-nossl/install = $(Package/libulfius/install)
++Package/libulfius-gnutls/install = $(Package/libulfius/install)
++
+ $(eval $(call BuildPackage,libulfius-gnutls))
+ $(eval $(call BuildPackage,libulfius-nossl))

@@ -2,6 +2,7 @@
 set -uo pipefail
 
 queue_file="${1:-}"
+unit_packages_file="${2:-}"
 state_dir="${BUILD_STATE_DIR:-$PWD/build-state}"
 jobs="${JOBS:-$(($(nproc) + 1))}"
 soft_deadline="${SOFT_DEADLINE_SECONDS:-$((280 * 60))}"
@@ -14,8 +15,8 @@ results_dir="$state_dir/build-results"
 logs_dir="$state_dir/build-logs"
 active_pid=""
 
-if [ -z "$queue_file" ] || [ ! -f "$queue_file" ]; then
-	echo "Usage: compile-package-queue.sh QUEUE_TSV" >&2
+if [ -z "$queue_file" ] || [ ! -f "$queue_file" ] || [ -z "$unit_packages_file" ] || [ ! -f "$unit_packages_file" ]; then
+	echo "Usage: compile-package-queue.sh QUEUE_TSV UNIT_PACKAGES_TSV" >&2
 	exit 1
 fi
 if ! [[ "$soft_deadline" =~ ^[1-9][0-9]*$ ]] || ! [[ "$hard_deadline" =~ ^[1-9][0-9]*$ ]] || [ "$soft_deadline" -ge "$hard_deadline" ]; then
@@ -74,6 +75,64 @@ requeue_missing_mac80211_symvers() {
 }
 
 requeue_missing_mac80211_symvers
+
+refresh_ipk_packages() {
+	local output="$state_dir/ipk-packages.txt"
+	local ipk control_archive package
+	: > "$output.tmp"
+	while IFS= read -r -d '' ipk; do
+		if [ "${ipk##*/}" = "__.ipk" ]; then
+			echo "Ignoring malformed IPK with empty package metadata: $ipk" >&2
+			continue
+		fi
+		control_archive="$(tar -tf "$ipk" 2>/dev/null | sed -n '/^\.\/control\.tar\.gz$/ { p; q; }; /^control\.tar\.gz$/ { p; q; }')"
+		if [ -z "$control_archive" ]; then
+			echo "Cannot find control.tar.gz in $ipk" >&2
+			rm -f "$output.tmp"
+			return 1
+		fi
+		package="$(tar -xOf "$ipk" "$control_archive" 2>/dev/null | tar -xzOf - ./control 2>/dev/null | sed -n 's/^Package: //p' | head -n 1)"
+		if [ -z "$package" ]; then
+			echo "Cannot read package identity from $ipk" >&2
+			rm -f "$output.tmp"
+			return 1
+		fi
+		printf '%s\n' "$package" >> "$output.tmp"
+	done < <(find bin -type f -name '*.ipk' -print0 2>/dev/null | sort -z)
+	sort -u "$output.tmp" > "$output"
+	rm -f "$output.tmp"
+}
+
+missing_packages_for_unit() {
+	local unit_id="$1"
+	local row_unit package feed
+	while IFS=$'\t' read -r row_unit package feed; do
+		[ "$row_unit" = "$unit_id" ] || continue
+		grep -Fqx -- "$package" "$state_dir/ipk-packages.txt" || printf '%s\n' "$package"
+	done < "$unit_packages_file"
+}
+
+requeue_missing_ipks() {
+	local unit_id package feed
+	refresh_ipk_packages || return 1
+	: > "$state_dir/missing-unit-packages.tsv"
+	while IFS=$'\t' read -r unit_id package feed; do
+		grep -Fqx -- "$unit_id" "$completed_file" || continue
+		grep -Fqx -- "$package" "$state_dir/ipk-packages.txt" || printf '%s\t%s\n' "$unit_id" "$package" >> "$state_dir/missing-unit-packages.tsv"
+	done < "$unit_packages_file"
+	if [ ! -s "$state_dir/missing-unit-packages.tsv" ]; then
+		return 0
+	fi
+	sort -u "$state_dir/missing-unit-packages.tsv" -o "$state_dir/missing-unit-packages.tsv"
+	while IFS=$'\t' read -r unit_id package; do
+		echo "requeue $unit_id because package $package is missing from bin"
+	done < "$state_dir/missing-unit-packages.tsv"
+	awk -F '\t' 'NR == FNR { requeue[$1] = 1; next } !($1 in requeue)' \
+		"$state_dir/missing-unit-packages.tsv" "$completed_file" > "$completed_file.tmp"
+	mv "$completed_file.tmp" "$completed_file"
+}
+
+requeue_missing_ipks || exit 1
 
 terminate_active() {
 	if [ -n "$active_pid" ] && kill -0 -- "-$active_pid" 2>/dev/null; then
@@ -279,7 +338,7 @@ process_unit() {
 	shift 2
 	local targets=("$@")
 	local dependency_mode="no-deps"
-	local log_name log_file status elapsed
+	local log_name log_file status elapsed missing_packages
 	if [ "${#targets[@]}" -gt 1 ]; then
 		dependency_mode="with-deps"
 	fi
@@ -313,6 +372,16 @@ process_unit() {
 		refresh_results
 		write_state paused "$unit_id"
 		return 75
+	fi
+	if [ "$status" -eq 0 ]; then
+		refresh_ipk_packages || status=1
+		if [ "$status" -eq 0 ]; then
+			missing_packages="$(missing_packages_for_unit "$unit_id")"
+			if [ -n "$missing_packages" ]; then
+				printf 'Missing selected package outputs for %s:\n%s\n' "$unit_id" "$missing_packages" | tee -a "$log_file" >&2
+				status=1
+			fi
+		fi
 	fi
 	if [ "$status" -ne 0 ]; then
 		echo "queue unit $unit_id failed; see $log_file" >&2
@@ -362,6 +431,15 @@ fi
 if ! cmp -s "$results_dir/EXPECTED.txt" "$results_dir/SUCCESS.txt"; then
 	write_state failed "${current_unit:--}"
 	echo "Queue finished without successful results for every selected package" >&2
+	exit 1
+fi
+refresh_ipk_packages || exit 1
+missing_packages="$(while IFS=$'\t' read -r _ package _; do
+	grep -Fqx -- "$package" "$state_dir/ipk-packages.txt" || printf '%s\n' "$package"
+done < "$unit_packages_file" | sort -u)"
+if [ -n "$missing_packages" ]; then
+	write_state failed "${current_unit:--}"
+	printf 'Queue finished without selected package outputs:\n%s\n' "$missing_packages" >&2
 	exit 1
 fi
 write_state complete -

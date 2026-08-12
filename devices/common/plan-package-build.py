@@ -12,6 +12,51 @@ from pathlib import Path
 
 BUILD_TARGET_RE = re.compile(r"^(?:package|tools|toolchain)/[^\s:#%$]+/(?:host/)?compile$")
 DEP_SPEC_RE = re.compile(r"([A-Za-z0-9][A-Za-z0-9_.+@-]*)(/host)?")
+PACKAGE_CONFIG_RE = re.compile(r"^CONFIG_PACKAGE_(.+)=[my]$")
+HOST_ONLY_RE = re.compile(r"^\s*PKG_HOST_ONLY\s*:?=\s*1\s*$", re.MULTILINE)
+PACKAGE_BLOCK_RE = re.compile(
+    r"^define Package/([^\s/]+)\s*$\n(.*?)^endef\s*$",
+    re.MULTILINE | re.DOTALL,
+)
+BUILD_ONLY_RE = re.compile(r"^\s*BUILDONLY\s*:?=\s*1\s*$", re.MULTILINE)
+
+
+def selected_packages(path: Path) -> set[str]:
+    return {
+        match.group(1)
+        for line in path.read_text(encoding="utf-8", errors="replace").splitlines()
+        if (match := PACKAGE_CONFIG_RE.fullmatch(line))
+    }
+
+
+def output_package_name(package: str, abi_version: str) -> str:
+    if not abi_version or package.startswith("kmod-"):
+        return package
+    separator = "-" if package[-1].isdigit() else ""
+    return package + separator + abi_version
+
+
+def package_source(root: Path, target: str) -> Path | None:
+    if not target.startswith("package/feeds/") or not target.endswith("/compile"):
+        return None
+    source = root / target.removesuffix("/compile") / "Makefile"
+    return source if source.is_file() else None
+
+
+def host_only_target(root: Path, target: str) -> bool:
+    source = package_source(root, target)
+    return bool(source and HOST_ONLY_RE.search(source.read_text(errors="replace")))
+
+
+def build_only_packages(root: Path, target: str) -> set[str]:
+    source = package_source(root, target)
+    if not source:
+        return set()
+    return {
+        package
+        for package, body in PACKAGE_BLOCK_RE.findall(source.read_text(errors="replace"))
+        if BUILD_ONLY_RE.search(body)
+    }
 
 
 def unconditional_dependencies(value: str) -> list[str]:
@@ -36,10 +81,11 @@ def source_target(source_makefile: str, host: bool = False) -> str | None:
 
 def parse_packageinfo(
     path: Path,
-) -> tuple[dict[str, set[str]], dict[str, str], dict[str, set[str]]]:
+) -> tuple[dict[str, set[str]], dict[str, str], dict[str, set[str]], dict[str, str]]:
     graph: dict[str, set[str]] = defaultdict(set)
     package_sources: dict[str, str] = {}
     target_packages: dict[str, set[str]] = defaultdict(set)
+    package_outputs: dict[str, str] = {}
     records: list[dict[str, list[str]]] = []
     record: dict[str, list[str]] = defaultdict(list)
     current_key: str | None = None
@@ -76,6 +122,8 @@ def parse_packageinfo(
                     package_sources[name] = current_target
                     if field == "Package":
                         target_packages[current_target].add(name)
+                        abi_version = item.get("ABI-Version", [""])[-1]
+                        package_outputs[name] = output_package_name(name, abi_version)
 
     for target, item in record_targets:
         for value in item.get("Depends", []):
@@ -84,7 +132,7 @@ def parse_packageinfo(
                 if dependency and dependency != target:
                     graph[target].add(dependency)
 
-    return graph, package_sources, target_packages
+    return graph, package_sources, target_packages, package_outputs
 
 
 def parse_printdb(path: Path, graph: dict[str, set[str]]) -> None:
@@ -185,6 +233,7 @@ def managed_ref(target: str) -> str | None:
 def main() -> int:
     parser = argparse.ArgumentParser()
     parser.add_argument("--packageinfo", type=Path, required=True)
+    parser.add_argument("--config", type=Path, required=True)
     parser.add_argument("--printdb", type=Path, required=True)
     parser.add_argument("--managed-feeds", type=Path, required=True)
     parser.add_argument("--package-filter", default=".*")
@@ -196,7 +245,15 @@ def main() -> int:
     except re.error as error:
         parser.error(f"invalid package regex: {error}")
 
-    graph, _, target_packages = parse_packageinfo(args.packageinfo)
+    graph, _, target_packages, package_outputs = parse_packageinfo(args.packageinfo)
+    configured_packages = selected_packages(args.config)
+    source_root = args.packageinfo.parent.parent
+    host_only_targets = {
+        target for target in target_packages if host_only_target(source_root, target)
+    }
+    target_build_only_packages = {
+        target: build_only_packages(source_root, target) for target in target_packages
+    }
     parse_printdb(args.printdb, graph)
     feeds = {line.strip() for line in args.managed_feeds.read_text(encoding="utf-8").splitlines() if line.strip()}
     kernel_sources = {
@@ -245,6 +302,7 @@ def main() -> int:
     package_units = dependency_units(leaf_targets, graph)
 
     queue_rows: list[tuple[str, str, str, str, int]] = []
+    unit_packages: list[tuple[str, str, str]] = []
     unit_index = 0
     for phase, units in (("foundation", foundation_units), ("packages", package_units)):
         for unit in units:
@@ -260,6 +318,14 @@ def main() -> int:
                         int(target in selected),
                     )
                 )
+                if target in managed and target not in host_only_targets:
+                    unit_packages.extend(
+                        (unit_id, package_outputs[package], managed[target].split("/", 1)[0])
+                        for package in sorted(
+                            (target_packages[target] & configured_packages)
+                            - target_build_only_packages[target]
+                        )
+                    )
 
     args.output.mkdir(parents=True, exist_ok=True)
     (args.output / "queue.tsv").write_text(
@@ -267,6 +333,10 @@ def main() -> int:
             f"{unit_id}\t{phase}\t{ref}\t{target}\t{report}\n"
             for unit_id, phase, ref, target, report in queue_rows
         ),
+        encoding="utf-8",
+    )
+    (args.output / "unit-packages.tsv").write_text(
+        "".join(f"{unit_id}\t{package}\t{feed}\n" for unit_id, package, feed in unit_packages),
         encoding="utf-8",
     )
     (args.output / "SKIPPED.txt").write_text("".join(f"{ref}\n" for ref in skipped), encoding="utf-8")

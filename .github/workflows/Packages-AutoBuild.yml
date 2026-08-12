@@ -362,6 +362,7 @@ jobs:
         fi
         python3 devices/common/plan-package-build.py \
           --packageinfo tmp/.packageinfo \
+          --config .config \
           --printdb tmp/.make-printdb \
           --managed-feeds .managed-feeds \
           --package-filter "$PACKAGE_FILTER" \
@@ -370,7 +371,7 @@ jobs:
         build_identity="$({
           printf 'compiler-commit=%s\n' "$(git -C "$GITHUB_WORKSPACE" rev-parse HEAD)"
           printf 'private-workspace=%s\n' "$PRIVATE_WORKSPACE_COMMIT"
-          sha256sum .config .managed-feeds feeds.conf SOURCE-MANIFEST.tsv build-plan/queue.tsv
+          sha256sum .config .managed-feeds feeds.conf SOURCE-MANIFEST.tsv build-plan/queue.tsv build-plan/unit-packages.tsv
           find "$GITHUB_WORKSPACE/sdk-metadata" -type f -print0 | sort -z | xargs -0 sha256sum
         } | sha256sum | cut -d ' ' -f 1)"
         printf '%s\n' "$build_identity" > build-plan/build-identity
@@ -513,6 +514,38 @@ jobs:
         test -f "$checkpoint"
         tar --zstd -xf "$checkpoint" -C openwrt
 
+    - name: Migrate queue checkpoint
+      if: env.CHECKPOINT_RUN_ID != ''
+      env:
+        GITHUB_TOKEN: ${{ github.token }}
+      run: |
+        set -euo pipefail
+        saved_queue_sha256="$(<openwrt/build-state/queue.sha256)"
+        current_queue="$GITHUB_WORKSPACE/package-plan/build-plan/queue.tsv"
+        if printf '%s  %s\n' "$saved_queue_sha256" "$current_queue" | sha256sum -c - >/dev/null 2>&1; then
+          exit 0
+        fi
+        artifact_id="$(
+          gh api "repos/$GITHUB_REPOSITORY/actions/runs/$CHECKPOINT_RUN_ID/artifacts" \
+            --jq '.artifacts[] | select(.name | startswith("package-build-plan-")) | .id' |
+          tail -n 1
+        )"
+        test -n "$artifact_id"
+        previous_queue="$RUNNER_TEMP/previous-queue.tsv"
+        python3 devices/common/download-artifact-entry.py \
+          --repository "$GITHUB_REPOSITORY" \
+          --artifact-id "$artifact_id" \
+          --entry "build-plan/queue.tsv" \
+          --output "$previous_queue"
+        printf '%s  %s\n' "$saved_queue_sha256" "$previous_queue" | sha256sum -c -
+        python3 devices/common/migrate-package-queue.py \
+          --previous-queue "$previous_queue" \
+          --current-queue "$current_queue" \
+          --completed openwrt/build-state/completed.units \
+          --output openwrt/build-state/completed.units.migrated
+        mv openwrt/build-state/completed.units.migrated openwrt/build-state/completed.units
+        sha256sum "$current_queue" | cut -d ' ' -f 1 > openwrt/build-state/queue.sha256
+
     - name: Compile dependency queue
       id: compile
       continue-on-error: true
@@ -523,7 +556,8 @@ jobs:
         BUILD_PLAN_DIR="$GITHUB_WORKSPACE/package-plan/build-plan" \
           BUILD_STATE_DIR="$GITHUB_WORKSPACE/openwrt/build-state" \
           /bin/bash devices/common/compile-package-queue.sh \
-          "$GITHUB_WORKSPACE/package-plan/build-plan/queue.tsv" || status=$?
+          "$GITHUB_WORKSPACE/package-plan/build-plan/queue.tsv" \
+          "$GITHUB_WORKSPACE/package-plan/build-plan/unit-packages.tsv" || status=$?
         queue_status="$(sed -n 's/^status=//p' build-state/QUEUE-STATE.txt 2>/dev/null || true)"
         [ -n "$queue_status" ] || queue_status="failed"
         {
@@ -586,6 +620,7 @@ jobs:
         mkdir -p "$artifact/ipk" "$artifact/metadata/sdk-metadata"
         rsync -a --prune-empty-dirs --include='*/' --include='*.ipk' --exclude='*' openwrt/bin/ "$artifact/ipk/bin/"
         cp -a openwrt/build-state/build-results "$artifact/"
+        cp -f package-plan/build-plan/unit-packages.tsv "$artifact/metadata/unit-packages.tsv"
         if [ -d openwrt/build-state/build-logs ]; then cp -a openwrt/build-state/build-logs "$artifact/"; fi
         cp -f openwrt/.config "$artifact/metadata/openwrt.config"
         cp -f openwrt/.managed-feeds "$artifact/metadata/managed-feeds"

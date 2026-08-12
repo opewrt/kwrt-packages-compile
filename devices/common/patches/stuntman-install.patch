@@ -1,0 +1,13 @@
+--- a/feeds/kiddin9/openwrt-stuntman/Makefile
++++ b/feeds/kiddin9/openwrt-stuntman/Makefile
+@@ -62,6 +62,10 @@
+ Package/$(PKG_NAME)-server/description = $(Package/$(PKG_NAME)/description/Default)
+ Package/$(PKG_NAME)-testcode/description = $(Package/$(PKG_NAME)/description/Default)
+
++define Package/$(PKG_NAME)/install
++	/bin/true
++endef
++
+ define Package/$(PKG_NAME)-client/install
+ 	$(INSTALL_DIR) $(1)/usr/bin
+ 	$(INSTALL_BIN) $(PKG_BUILD_DIR)/stunclient $(1)/usr/bin/

@@ -45,7 +45,7 @@ for stage_dir in "${stage_dirs[@]}"; do
 		exit 1
 	fi
 
-	for metadata_file in openwrt.config managed-feeds feeds.conf build-identity SOURCE-AUDIT.tsv SOURCE-AUDIT.json SOURCE-AUDIT-SUMMARY.txt SOURCE-MANIFEST.tsv private-workspace-commit sdk-metadata/MANIFEST.refs sdk-metadata/ASSETS.sha256sums sdk-metadata/SDK.refs; do
+	for metadata_file in openwrt.config managed-feeds feeds.conf build-identity unit-packages.tsv SOURCE-AUDIT.tsv SOURCE-AUDIT.json SOURCE-AUDIT-SUMMARY.txt SOURCE-MANIFEST.tsv private-workspace-commit sdk-metadata/MANIFEST.refs sdk-metadata/ASSETS.sha256sums sdk-metadata/SDK.refs; do
 		if [ ! -f "$stage_dir/metadata/$metadata_file" ]; then
 			echo "Missing stage metadata: $stage_dir/metadata/$metadata_file" >&2
 			exit 1
@@ -125,10 +125,33 @@ if [ -s "$results_dir/RESULT-DIFFERENCE.txt" ]; then
 fi
 rm -f "$results_dir/RESULT-DIFFERENCE.txt"
 
+package_identities="$metadata_dir/package-identities.txt"
+: > "$package_identities.tmp"
+while IFS= read -r -d '' ipk; do
+	if [ "${ipk##*/}" = "__.ipk" ]; then
+		echo "Ignoring malformed IPK with empty package metadata: ${ipk#"$openwrt_dir/"}" >&2
+		continue
+	fi
+	control_archive="$(tar -tf "$ipk" 2>/dev/null | sed -n '/^\.\/control\.tar\.gz$/ { p; q; }; /^control\.tar\.gz$/ { p; q; }')"
+	package="$(tar -xOf "$ipk" "$control_archive" 2>/dev/null | tar -xzOf - ./control 2>/dev/null | sed -n 's/^Package: //p' | head -n 1)"
+	if [ -z "$control_archive" ] || [ -z "$package" ]; then
+		echo "Cannot read package identity from $ipk" >&2
+		exit 1
+	fi
+	printf '%s\n' "$package" >> "$package_identities.tmp"
+done < <(find "$openwrt_dir/bin" -type f -name '*.ipk' -print0 2>/dev/null | sort -z)
+sort -u "$package_identities.tmp" > "$package_identities"
+rm -f "$package_identities.tmp"
+if ! awk -F '\t' 'NR == FNR { present[$1] = 1; next } !($2 in present) { print "Missing selected package output: " $2 > "/dev/stderr"; missing = 1 } END { exit missing }' \
+	"$package_identities" "$canonical/metadata/unit-packages.tsv"; then
+	exit 1
+fi
+
 cp -f "$canonical/metadata/openwrt.config" "$openwrt_dir/.config"
 cp -f "$canonical/metadata/managed-feeds" "$openwrt_dir/.managed-feeds"
 cp -f "$canonical/metadata/feeds.conf" "$openwrt_dir/feeds.conf"
 cp -f "$canonical/metadata/build-identity" "$openwrt_dir/BUILD-IDENTITY"
+cp -f "$canonical/metadata/unit-packages.tsv" "$openwrt_dir/UNIT-PACKAGES.tsv"
 for source_report in SOURCE-AUDIT.tsv SOURCE-AUDIT.json SOURCE-AUDIT-SUMMARY.txt SOURCE-MANIFEST.tsv; do
 	cp -f "$canonical/metadata/$source_report" "$openwrt_dir/$source_report"
 done

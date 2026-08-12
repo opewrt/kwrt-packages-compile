@@ -1,0 +1,13 @@
+--- a/feeds/packages/utils/sane-backends/Makefile
++++ b/feeds/packages/utils/sane-backends/Makefile
+@@ -203,6 +203,10 @@ define Build/Install
+ 	done
+ endef
+
++define Package/sane-backends/install
++	/bin/true
++endef
++
+ define Package/libsane/install
+ 	$(INSTALL_DIR) $(1)/usr/lib/sane/
+ 	$(CP) $(PKG_INSTALL_DIR)/usr/lib/libsane.so.* $(1)/usr/lib/

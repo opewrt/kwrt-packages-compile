@@ -21,10 +21,17 @@ esac
 api="https://api.github.com/repos/$repository"
 mkdir -p "$metadata_dir"
 
+AUTH_TOKEN="${REPO_TOKEN:-${GITHUB_TOKEN:-}}"
+auth_header=()
+if [ -n "$AUTH_TOKEN" ]; then
+	auth_header=(-H "Authorization: Bearer $AUTH_TOKEN")
+fi
+
 get_release() {
 	local tag="$1"
 	local release_file="$2"
 	curl -fsSL --retry 5 --retry-delay 2 \
+		"${auth_header[@]}" \
 		-H 'Accept: application/vnd.github+json' \
 		"$api/releases/tags/$tag" > "$release_file"
 }
@@ -43,14 +50,24 @@ try_release() {
 		return 1
 	fi
 
-	manifest_url="$(jq -r '.assets[] | select(.name == "MANIFEST.refs") | .browser_download_url' "$release_file" | head -n 1)"
-	checksums_url="$(jq -r '.assets[] | select(.name == "ASSETS.sha256sums") | .browser_download_url' "$release_file" | head -n 1)"
+	if [ -n "$AUTH_TOKEN" ]; then
+		manifest_url="$(jq -r '.assets[] | select(.name == "MANIFEST.refs") | .url' "$release_file" | head -n 1)"
+		checksums_url="$(jq -r '.assets[] | select(.name == "ASSETS.sha256sums") | .url' "$release_file" | head -n 1)"
+	else
+		manifest_url="$(jq -r '.assets[] | select(.name == "MANIFEST.refs") | .browser_download_url' "$release_file" | head -n 1)"
+		checksums_url="$(jq -r '.assets[] | select(.name == "ASSETS.sha256sums") | .browser_download_url' "$release_file" | head -n 1)"
+	fi
 	if [ -z "$manifest_url" ] || [ -z "$checksums_url" ]; then
 		return 1
 	fi
 
-	curl -fsSL --retry 5 --retry-delay 2 "$manifest_url" -o "$work_dir/MANIFEST.refs"
-	curl -fsSL --retry 5 --retry-delay 2 "$checksums_url" -o "$work_dir/ASSETS.sha256sums"
+	if [ -n "$AUTH_TOKEN" ]; then
+		curl -fsSL --retry 5 --retry-delay 2 "${auth_header[@]}" -H 'Accept: application/octet-stream' "$manifest_url" -o "$work_dir/MANIFEST.refs"
+		curl -fsSL --retry 5 --retry-delay 2 "${auth_header[@]}" -H 'Accept: application/octet-stream' "$checksums_url" -o "$work_dir/ASSETS.sha256sums"
+	else
+		curl -fsSL --retry 5 --retry-delay 2 "$manifest_url" -o "$work_dir/MANIFEST.refs"
+		curl -fsSL --retry 5 --retry-delay 2 "$checksums_url" -o "$work_dir/ASSETS.sha256sums"
+	fi
 	manifest_arch="$(sed -n 's/^package_arch=//p' "$work_dir/MANIFEST.refs" | tail -n 1)"
 	manifest_openwrt="$(sed -n 's/^openwrt=//p' "$work_dir/MANIFEST.refs" | tail -n 1)"
 	if [ "$manifest_arch" != "$package_arch" ] || [ "$manifest_openwrt" != "$expected_openwrt" ]; then
@@ -65,7 +82,11 @@ try_release() {
 	if [ -z "$sdk_asset" ]; then
 		return 1
 	fi
-	sdk_url="$(jq -r --arg name "$sdk_asset" '.assets[] | select(.name == $name) | .browser_download_url' "$release_file" | head -n 1)"
+	if [ -n "$AUTH_TOKEN" ]; then
+		sdk_url="$(jq -r --arg name "$sdk_asset" '.assets[] | select(.name == $name) | .url' "$release_file" | head -n 1)"
+	else
+		sdk_url="$(jq -r --arg name "$sdk_asset" '.assets[] | select(.name == $name) | .browser_download_url' "$release_file" | head -n 1)"
+	fi
 	if [ -z "$sdk_url" ]; then
 		return 1
 	fi
@@ -101,6 +122,7 @@ else
 	page=1
 	while [ -z "$selected_dir" ]; do
 		curl -fsSL --retry 5 --retry-delay 2 \
+			"${auth_header[@]}" \
 			-H 'Accept: application/vnd.github+json' \
 			"$api/releases?per_page=100&page=$page" > "$releases_file"
 		if [ "$(jq 'length' "$releases_file")" -eq 0 ]; then

@@ -281,6 +281,8 @@ jobs:
 
     - name: Resolve Kwrt SDK release
       id: sdk
+      env:
+        REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
       run: |
         "$GITHUB_WORKSPACE/devices/common/resolve-kwrt-sdk.sh" \
           "$SDK_REPOSITORY" \
@@ -314,13 +316,19 @@ jobs:
           kwrt-packages-dl-${{ runner.os }}-${{ env.TARGET }}-
 
     - name: Download and verify Kwrt SDK
+      env:
+        REPO_TOKEN: ${{ secrets.REPO_TOKEN }}
       run: |
         set -euo pipefail
         sdk_dir="$GITHUB_WORKSPACE/.cache/sdk/$SDK_RELEASE_TAG"
         sdk_archive="$sdk_dir/$SDK_ASSET_NAME"
         mkdir -p "$sdk_dir"
         if [ ! -f "$sdk_archive" ]; then
-          curl -fL --retry 5 --retry-delay 5 "$SDK_DOWNLOAD_URL" -o "$sdk_archive"
+          auth_args=()
+          if [ -n "${REPO_TOKEN:-}" ]; then
+            auth_args=(-H "Authorization: Bearer $REPO_TOKEN" -H "Accept: application/octet-stream")
+          fi
+          curl -fL --retry 5 --retry-delay 5 "${auth_args[@]}" "$SDK_DOWNLOAD_URL" -o "$sdk_archive"
         fi
         printf '%s  %s\n' "$SDK_SHA256" "$SDK_ASSET_NAME" |
           (cd "$sdk_dir" && sha256sum -c -)
